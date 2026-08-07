@@ -947,19 +947,37 @@ export default function App() {
               throw new Error('No response data returned from executor');
             }
 
-            let updatedMessages = job.messages || [];
-            if (resData?.message || resData?.reply || resData?.globalSummary || resData?.extractedData) {
-              const assistantMsg: any = {
-                id: `msg_assistant_${Date.now()}`,
-                role: 'assistant',
-                content: resData.message || resData.reply || resData.globalSummary || 'Clinical analysis complete.',
-                timestamp: new Date().toISOString(),
-                agentResult: resData,
-                agentType: 'medical',
-                agentTypeStep: resData.agentType || inputSnapshot.agentType || 'agent1_step1'
-              };
-              updatedMessages = [...updatedMessages, assistantMsg];
-            }
+             let updatedMessages = job.messages || [];
+             if (resData?.message || resData?.reply || resData?.globalSummary || resData?.extractedData) {
+               // B6 FIX: Use real agentType from inputSnapshot, not hardcoded 'medical'
+               const realAgentType = inputSnapshot.agentType || 'agent1_step1';
+               const assistantMsg: any = {
+                 id: `msg_assistant_${Date.now()}`,
+                 role: 'assistant',
+                 content: resData.message || resData.reply || resData.globalSummary || 'Clinical analysis complete.',
+                 timestamp: new Date().toISOString(),
+                 agentResult: resData,
+                 agentType: realAgentType,
+                 agentTypeStep: resData.agentType || realAgentType
+               };
+               updatedMessages = [...updatedMessages, assistantMsg];
+
+               // B6 FIX: Emit log entry for biomarker_review so it appears in log history
+               if (realAgentType === 'biomarker_review' && resData) {
+                 try {
+                   await handleLogMedical(
+                     resData.corrections || resData.biomarkerCorrections || {},
+                     undefined,
+                     resData.date,
+                     undefined,
+                     undefined,
+                     true /* skipClose */
+                   );
+                 } catch (logErr) {
+                   console.warn('[JobQueueRunner] Failed to write biomarker_review log entry:', logErr);
+                 }
+               }
+             }
 
             JobStore.updateJob(job.id, {
               status: 'succeeded',
@@ -1153,6 +1171,19 @@ export default function App() {
     if (activeJobId) {
       const job = JobStore.getJob(activeJobId);
       if (job && job.kind === 'medical') {
+        // B4 FIX: Restore agentType from job snapshot so biomarker_review UI renders correctly
+        const jobAgentType = (job.inputSnapshot as any)?.agentType;
+        if (jobAgentType && jobAgentType !== 'agent1_step1') {
+          // Map stored agentType string to the correct state type
+          const validTypes = ['agent1','agent2','agent3','agent4','agent5','health_baseline','agent7','data_review','biomarker_review'] as const;
+          const matched = validTypes.find(t => t === jobAgentType);
+          if (matched) {
+            setActiveAgentType(matched);
+          }
+        }
+        if ((job.inputSnapshot as any)?.reviewBiomarkerKey) {
+          setActiveReviewBiomarkerKey((job.inputSnapshot as any).reviewBiomarkerKey);
+        }
         setIsMedicalChatOpen(true);
       }
     }
@@ -5755,6 +5786,44 @@ export default function App() {
           let currentReport = report ? { ...report } : null;
           let currentDailyBenefits = [...dailyBenefits];
           let currentActions = [...actions];
+
+          // B5 FIX: Handle biomarker_review agent results — apply corrections to history + profile
+          if ((agentType as string) === 'biomarker_review') {
+            const corrections: Record<string, any> = agentResult?.corrections || agentResult?.biomarkerCorrections || {};
+            const correctionDate = agentResult?.date || new Date().toISOString().split('T')[0];
+            if (Object.keys(corrections).length > 0) {
+              // Merge corrections into the matching history entry or add new one
+              const existingIdx = currentHistory.findIndex((h: any) => h.date === correctionDate);
+              if (existingIdx >= 0) {
+                currentHistory[existingIdx] = {
+                  ...currentHistory[existingIdx],
+                  biomarkers: { ...currentHistory[existingIdx].biomarkers, ...corrections }
+                };
+              } else {
+                currentHistory.push({
+                  id: `log_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
+                  date: correctionDate,
+                  biomarkers: corrections,
+                  note: "Corrected by Biomarker Review Agent"
+                });
+              }
+              // Also update current biomarkers snapshot
+              const updatedBiomarkersFromReview = { ...biomarkers, ...corrections };
+              setBiomarkers(updatedBiomarkersFromReview);
+              setBiomarkerHistory(currentHistory);
+              
+              // Save profile with updated history
+              const finalProfile = { ...updatedProfile };
+              setProfile(finalProfile);
+              await saveAndSync(finalProfile, foodLogs, updatedBiomarkersFromReview, currentHistory, actions, dailyBenefits, report, { type: 'biomarkerLog' });
+              setCalibratingAgentType(null);
+              return;
+            } else {
+              // Even if corrections is empty, still clear and return
+              setCalibratingAgentType(null);
+              return;
+            }
+          }
           
           if ((agentType as string) === 'agent1' || (agentType as string) === 'medical_extract') {
             // A flat Step-1 extraction result always carries its own extractedData.

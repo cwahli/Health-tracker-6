@@ -391,7 +391,7 @@ interface LogChatProps {
   reviewBiomarkerKey?: string;
   onOpenAgentFromFrontDesk?: (agentType: 'agent1' | 'agent2' | 'agent3' | 'agent4' | 'agent5' | 'agent7' | 'data_review' | 'health_baseline' | null) => void;
   biomarkerHistory?: any[];
-  onAgentFinish?: (agentType: 'agent1' | 'agent2' | 'agent3' | 'agent4' | 'agent5' | 'agent7' | 'data_review' | 'health_baseline', agentResult:  any) => Promise<void>;
+  onAgentFinish?: (agentType: string, agentResult: any, extraActions?: any) => Promise<void>;
   onAgentAnalysisSaved?: (agentType: string, agentResult: any, existingId?: string) => Promise<string>;
   onGoToManualEdit?: (errorMsg?: string) => void;
   onSaveProfile?: (profile: UserProfile) => Promise<void>;
@@ -2330,6 +2330,21 @@ ${logsText}`);
 
     if (isAgent('medical')) {
       try {
+        // B2 FIX: Guard against duplicate job creation (e.g. when both autoSend and manual button fire)
+        const activeType = agentType || 'agent1_step1';
+        const dedupeKey = reviewBiomarkerKey ? `${activeType}_${reviewBiomarkerKey}` : activeType;
+        const duplicate = JobStore.getAllJobs().find(j =>
+          j.kind === 'medical' &&
+          (j.status === 'queued' || j.status === 'running') &&
+          (j.inputSnapshot as any)?.agentType === activeType &&
+          (!reviewBiomarkerKey || (j.inputSnapshot as any)?.reviewBiomarkerKey === reviewBiomarkerKey)
+        );
+        if (duplicate) {
+          console.log(`[LogChat] B2: Skipping duplicate job for ${dedupeKey}, existing job: ${duplicate.id}`);
+          onClose();
+          return;
+        }
+
         const currentJobId = jobId || `job_medical_${Date.now()}`;
         const job = JobStore.getJob(currentJobId);
 
@@ -3758,6 +3773,8 @@ ${logsText}`);
         setInputText(autoSendMessage);
         return;
       }
+      // B1 FIX: biomarker_review has a dedicated "Run AI Diagnostic" button — never auto-fire
+      if (agentType === 'biomarker_review') return;
 
       const currentSendKey = `${agentType || 'med'}_${reviewBiomarkerKey || ''}_${autoSendMessage}`;
       if (lastAutoSendKeyRef.current !== currentSendKey) {
@@ -5114,7 +5131,17 @@ ${JSON.stringify(profile, null, 2)}`);
                           actionRef={foodCardActionRef}
                           handleAgent1Step={handleAgent1Step}
                           handleContinueExtractionChunk={handleContinueExtractionChunk}
-                          onAgentFinish={onAgentFinish}
+                          onAgentFinish={async (agentType, agentResult, extraActions) => {
+                            // B3 FIX: Signal loading while onAgentFinish is executing
+                            setIsAnalyzing(true);
+                            try {
+                              if (onAgentFinish) {
+                                await onAgentFinish(agentType, agentResult, extraActions);
+                              }
+                            } finally {
+                              setIsAnalyzing(false);
+                            }
+                          }}
                           handleSend={handleSend}
                           setActiveInstructionAgentType={setActiveInstructionAgentType}
                           setActiveInstructionPrompt={setActiveInstructionPrompt}
