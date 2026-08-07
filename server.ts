@@ -5197,7 +5197,10 @@ app.post("/api/gemini/food-analyze", async (req, res) => {
         const classFillerNouns = new Set([
           'cooked', 'raw', 'fresh', 'prepared', 'style', 'flavored', 
           'with', 'product', 'food', 'item', 'canned', 'frozen', 
-          'dried', 'sliced', 'chopped', 'ground', 'boneless', 'skinless'
+          'dried', 'sliced', 'chopped', 'ground', 'boneless', 'skinless',
+          'cubes', 'cubed', 'diced', 'shredded', 'crumbled', 'pieces', 'chunks',
+          'roasted', 'boiled', 'baked', 'grilled', 'steamed', 'fried', 'poached',
+          'toasted', 'minced', 'crushed', 'grated', 'blend', 'mix', 'mixed'
         ]);
         let tokens = words.filter(word => !classFillerNouns.has(word));
         let categoryBias: string | undefined;
@@ -5236,9 +5239,8 @@ app.post("/api/gemini/food-analyze", async (req, res) => {
             Array.from(dbTokens).some(dt => dt.startsWith(token) || token.startsWith(dt))
           );
           const passCategoryBias = categoryBias === 'vegetable' && (dbTokens.has('spinach') || dbTokens.has('broccoli') || dbTokens.has('kale') || dbTokens.has('greens'));
-          const isBrand = m.source === 'brand_official' || m.brandPriority;
           
-          if (!passTokenLock && !passCategoryBias && !isBrand) return;
+          if (!passTokenLock && !passCategoryBias) return;
 
           // RULE 2: Composite Meal Rejection
           if (isComponentQuery) {
@@ -5295,7 +5297,7 @@ app.post("/api/gemini/food-analyze", async (req, res) => {
           });
           
           if (m.source === 'brand_official' || m.brandPriority) {
-            score += 100;
+            score += 25;
           }
 
           // RULE 4: Fatal Penalty for High-Risk Structural Mismatches

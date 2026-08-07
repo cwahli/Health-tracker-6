@@ -1696,7 +1696,7 @@ export async function searchBrandMenuItems(query: string, explicitChainKey?: str
 
     let shared = 0;
     qWords.forEach(w => { if (iWords.has(w)) shared++; });
-    const ratio = shared / Math.min(qWords.size, iWords.size);
+    const ratio = shared / Math.max(qWords.size, iWords.size);
 
     if (chainKey && (qLower.includes(chainKey.replace(/_/g, ' ')) || qLower.includes(chainKey))) {
       return ratio * 1.5;
