@@ -7599,6 +7599,63 @@ Current User Input: "${message}"`) + modeDPromptSuffix;
     if (mode === "new_log") {
       const rawFoodData = rawParsed.foodData || {};
 
+      // --- Edit-mode data preservation fix ---
+      // When editing an existing meal, the dietitian LLM regenerates itemsBreakdown
+      // from scratch and loses the previously-resolved database linkage (dbId,
+      // primaryBase100g, componentsDetailList, etc). Backfill those fields from the
+      // original activeMeal item (matched by scoutIndex, or array position as a
+      // fallback) so nutrient aggregation doesn't fall back to all-zero "estimated".
+      // Never overwrites fields the AI's edit actually changed (weight, name, method).
+      if (
+        originalModeIsModify &&
+        activeMeal &&
+        Array.isArray(activeMeal.itemsBreakdown) &&
+        Array.isArray(rawFoodData.itemsBreakdown) &&
+        rawFoodData.itemsBreakdown.length > 0
+      ) {
+        const origItems = activeMeal.itemsBreakdown;
+        const PRESERVE_KEYS = [
+          'primaryBase100g',
+          'primaryBaseWeightG',
+          'componentsDetailList',
+          'saucesDetailList',
+          'primaryBaseMatchName',
+          'physicalFormClassification',
+          'labelNutrientsPerServing',
+          'rawNutritionLabel',
+          'matchedKeywords',
+          'physicalForm',
+          'visualIngredients',
+          'components',
+          'cookingAdded',
+        ];
+        rawFoodData.itemsBreakdown = rawFoodData.itemsBreakdown.map((newItem: any, idx: number) => {
+          let origItem: any = null;
+          if (newItem.scoutIndex !== undefined && newItem.scoutIndex !== null) {
+            origItem = origItems.find((o: any) => o.scoutIndex === newItem.scoutIndex);
+          }
+          if (!origItem && origItems.length === rawFoodData.itemsBreakdown.length) {
+            origItem = origItems[idx];
+          }
+          if (!origItem) return newItem;
+
+          const merged = { ...newItem };
+          for (const key of PRESERVE_KEYS) {
+            if ((merged[key] === undefined || merged[key] === null) && origItem[key] !== undefined && origItem[key] !== null) {
+              merged[key] = origItem[key];
+            }
+          }
+          // Only reuse the original dbId/dbSource if the edit still looks unresolved
+          // (i.e. the AI didn't provide its own new database match for this item).
+          if ((merged.dbSource === 'estimated' || !merged.dbId) && origItem.dbId) {
+            merged.dbId = origItem.dbId;
+            merged.dbSource = origItem.dbSource;
+          }
+          return merged;
+        });
+        addDebugLog(`[Edit Merge] Re-attached preserved database resolution fields from original activeMeal items (matched by scoutIndex) to prevent nutrient zero-out on edit.`);
+      }
+
       if (!rawFoodData.itemsBreakdown || rawFoodData.itemsBreakdown.length === 0) {
         // Build itemsBreakdown from Vision Scout output + best DB match per item
         if (visionScoutItems && visionScoutItems.length > 0) {

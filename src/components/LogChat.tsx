@@ -2313,12 +2313,30 @@ ${logsText}`);
           mode: submissionMode
         };
 
+        // Use a durable base64 data URL instead of a throwaway blob: URL, so the
+        // preview image survives JobStore/localStorage persistence + rehydration
+        // (blob: URLs become invalid after reload and render as a broken image).
+        let userMsgImageUrl: string | undefined = undefined;
+        if (finalImages.length > 0) {
+          const firstImg = finalImages[0];
+          if (typeof firstImg === 'string') {
+            userMsgImageUrl = firstImg;
+          } else {
+            userMsgImageUrl = await new Promise<string>((resolve, reject) => {
+              const reader = new FileReader();
+              reader.onload = () => resolve(reader.result as string);
+              reader.onerror = () => reject(new Error('Failed to read image Blob for preview'));
+              reader.readAsDataURL(firstImg as Blob);
+            });
+          }
+        }
+
         const userMsg: ChatMessage = {
           id: `msg_user_${Date.now()}`,
           role: 'user',
           content: textToSend,
           timestamp: new Date().toISOString(),
-          imageUrl: finalImages.length > 0 ? (typeof finalImages[0] === 'string' ? finalImages[0] : URL.createObjectURL(finalImages[0] as Blob)) : undefined
+          imageUrl: userMsgImageUrl
         };
 
         const existingMsgs = (job?.messages && job.messages.length > 0)
