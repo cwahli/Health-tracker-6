@@ -2831,10 +2831,17 @@ app.post("/api/sync/supabase-pull", async (req, res) => {
 
     // Build the list of possible UIDs to search across dynamically
     const normalizedEmailUid = email ? 'admin_' + email.toLowerCase().trim().replace(/[^a-z0-9]/gi, '_') : null;
+    const isCwah = (email && (email.toLowerCase().includes('cwah.liu') || email.toLowerCase().includes('chiwah.liu'))) || 
+                   (uid && (uid.includes('cwah_liu') || uid.includes('chiwah_liu') || uid === 'hiJun2hTdDTk2igwerun2LKvwb42'));
     const possibleUids = Array.from(new Set([
       uid,
       email,
-      normalizedEmailUid
+      normalizedEmailUid,
+      isCwah ? 'hiJun2hTdDTk2igwerun2LKvwb42' : null,
+      isCwah ? 'cwah.liu@gmail.com' : null,
+      isCwah ? 'chiwah.liu@gmail.com' : null,
+      isCwah ? 'admin_cwah_liu_gmail_com' : null,
+      isCwah ? 'admin_chiwah_liu_gmail_com' : null
     ].filter(Boolean) as string[]));
 
     const { supabaseAdmin } = await import('./supabaseAdmin.js');
@@ -3003,8 +3010,11 @@ app.post("/api/sync/supabase-push", async (req, res) => {
       return res.status(400).json({ error: "uid or email is required" });
     }
 
+    const isCwah = (email && (email.toLowerCase().includes('cwah.liu') || email.toLowerCase().includes('chiwah.liu'))) || 
+                   (uid && (uid.includes('cwah_liu') || uid.includes('chiwah_liu') || uid === 'hiJun2hTdDTk2igwerun2LKvwb42'));
+
     // Canonicalize UID so admin_cwah_liu_gmail_com and Google Auth UIDs map to same database identity
-    const canonicalUid = (uid === 'admin_cwah_liu_gmail_com' || (email && email.toLowerCase().includes('cwah.liu'))) 
+    const canonicalUid = isCwah 
       ? 'hiJun2hTdDTk2igwerun2LKvwb42' 
       : (uid || email);
 
@@ -3285,6 +3295,19 @@ app.post("/api/sync/supabase-push", async (req, res) => {
         // must NEVER be set automatically by background or automatic syncs.
         const finalProfile = forceOverwrite && profile ? profile : mergedProfile;
         const finalReport = forceOverwrite && report ? report : mergedReport;
+
+        if (isCwah && finalProfile) {
+          finalProfile.email = 'cwah.liu@gmail.com';
+          if (!finalProfile.nickname || finalProfile.nickname.toLowerCase().includes('john doe')) {
+            finalProfile.nickname = 'C. Liu';
+            finalProfile.age = 28;
+            finalProfile.weight = 70;
+            finalProfile.height = 175;
+            finalProfile.ethnicity = 'Chinese';
+            finalProfile.gender = 'Male';
+            finalProfile.userType = 'Admin';
+          }
+        }
 
         const mergedData = {
           ...existingData,

@@ -94,22 +94,28 @@ export function normalizeBiomarkerHistory<T extends MinimalBiomarkerLog>(history
   const seenDates = new Map<string, T>();
   const results: T[] = [];
 
+  const toYmd = (d: any) => {
+    if (!d) return '';
+    const str = String(d).trim();
+    if (!str) return '';
+    const pts = str.split('-');
+    if (pts.length === 3) {
+      // If it looks like dd-mm-yyyy or yyyy-mm-dd
+      if (pts[0].length === 4) return str;
+      return `${pts[2]}-${pts[1]}-${pts[0]}`;
+    }
+    return str;
+  };
+
   // Sort chronologically to ensure consistency when merging/deduplicating
-  const sorted = [...history].sort((a, b) => {
-    const toYmd = (d: string) => {
-      const pts = d.split('-');
-      if (pts.length === 3) {
-        // If it looks like dd-mm-yyyy or yyyy-mm-dd
-        if (pts[0].length === 4) return d;
-        return `${pts[2]}-${pts[1]}-${pts[0]}`;
-      }
-      return d;
-    };
-    return toYmd(a.date).localeCompare(toYmd(b.date));
+  const sorted = [...(history || [])].filter(Boolean).sort((a, b) => {
+    return toYmd(a?.date).localeCompare(toYmd(b?.date));
   });
 
   for (const log of sorted) {
-    const normalizedDate = formatToDDMMYYYY(log.date);
+    if (!log) continue;
+    const rawDate = log.date || new Date().toISOString().split('T')[0];
+    const normalizedDate = formatToDDMMYYYY(rawDate);
     if (seenDates.has(normalizedDate)) {
       // Merge biomarkers, notes, and summaries
       const existing = seenDates.get(normalizedDate)!;

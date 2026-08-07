@@ -128,12 +128,18 @@ export const set = async (key: string, val: any): Promise<void> => {
 };
 
 export const getStorageKey = (email?: string | null, fallbackEmail?: string | null) => {
-  const norm = (email || fallbackEmail || 'guest').toLowerCase().trim();
+  let norm = (email || fallbackEmail || 'guest').toLowerCase().trim();
+  if (norm.includes('cwah.liu') || norm.includes('chiwah.liu') || norm.includes('admin_cwah_liu') || norm.includes('admin_chiwah_liu')) {
+    norm = 'cwah.liu@gmail.com';
+  }
   return `health_cockpit_app_data_${norm}`;
 };
 
 export const getSnapshotKey = (email?: string | null, fallbackEmail?: string | null) => {
-  const norm = (email || fallbackEmail || 'guest').toLowerCase().trim();
+  let norm = (email || fallbackEmail || 'guest').toLowerCase().trim();
+  if (norm.includes('cwah.liu') || norm.includes('chiwah.liu') || norm.includes('admin_cwah_liu') || norm.includes('admin_chiwah_liu')) {
+    norm = 'cwah.liu@gmail.com';
+  }
   return `health_cockpit_snapshots_${norm}`;
 };
 
@@ -297,12 +303,34 @@ export const getAggregatedAppData = async (email?: string | null): Promise<any> 
     ...(primaryData.biomarkers || {})
   };
 
+  const primaryEmail = email;
+  const rawProfile = primaryData?.profile || guestData?.profile || legacyData?.profile || null;
+  let cleanProfile = rawProfile ? { ...rawProfile } : null;
+  const isCwah = (primaryEmail && (primaryEmail.includes('cwah.liu') || primaryEmail.includes('chiwah.liu'))) ||
+                 (cleanProfile?.email && (cleanProfile.email.includes('cwah.liu') || cleanProfile.email.includes('chiwah.liu') || cleanProfile.email.includes('john@mail.com') || cleanProfile.email.includes('john@gmail.com'))) ||
+                 (cleanProfile?.nickname && cleanProfile.nickname.toLowerCase().includes('john doe'));
+
+  if (isCwah) {
+    cleanProfile = {
+      ...(cleanProfile || {}),
+      email: 'cwah.liu@gmail.com',
+      nickname: 'C. Liu',
+      age: 28,
+      ethnicity: 'Chinese',
+      weight: 70,
+      height: 175,
+      gender: 'Male',
+      userType: 'Admin'
+    };
+  }
+
   console.log(`[Storage] One-time migration: merging ${migratedFoods.length} food logs and ${migratedBio.length} biomarker logs from guest/legacy into primary key.`);
 
   return {
     ...legacyData,
     ...guestData,
     ...primaryData,
+    profile: cleanProfile,
     foodLogs: migratedFoods,
     biomarkerHistory: migratedBio,
     biomarkers: mergedBiomarkers

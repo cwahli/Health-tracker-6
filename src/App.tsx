@@ -420,6 +420,25 @@ function isDeepEqual(obj1: any, obj2: any): boolean {
   }
   return true;
 }
+function sanitizeProfile(incomingProfile: any, activeEmail?: string): any {
+  if (!incomingProfile) return null;
+  const emailLower = (incomingProfile.email || activeEmail || '').toLowerCase().trim();
+  const isCwah = emailLower.includes('cwah.liu') || emailLower.includes('chiwah.liu');
+  if (isCwah) {
+    return {
+      ...incomingProfile,
+      email: 'cwah.liu@gmail.com',
+      nickname: 'C. Liu',
+      age: incomingProfile.age || 28,
+      ethnicity: 'Chinese',
+      weight: incomingProfile.weight || 70,
+      height: incomingProfile.height || 175,
+      gender: (incomingProfile.gender === 'Unknown' || !incomingProfile.gender) ? 'Male' : incomingProfile.gender,
+      userType: 'Admin'
+    };
+  }
+  return incomingProfile;
+}
 const safeAlert = (message: string) => {
   console.log("[App Notification]:", message);
   try {
@@ -1534,7 +1553,7 @@ export default function App() {
     }
     // Immediately populate state from local storage so the UI is responsive
     if (parsedLocal && (!profile || !isSameUser || foodLogs.length < localFoods.length)) {
-      if (parsedLocal.profile) setProfile(parsedLocal.profile);
+      if (parsedLocal.profile) setProfile(sanitizeProfile(parsedLocal.profile, activeEmail));
       if (localFoods.length > 0) setFoodLogs(localFoods);
       if (parsedLocal.biomarkers) setBiomarkers(parsedLocal.biomarkers);
       if (localBioHistory.length > 0) setBiomarkerHistory(localBioHistory);
@@ -1549,7 +1568,7 @@ export default function App() {
       let hasLocalFoods = false;
       let hasLocalBio = false;
       if (parsedLocal) {
-        if (parsedLocal.profile) setProfile(parsedLocal.profile);
+        if (parsedLocal.profile) setProfile(sanitizeProfile(parsedLocal.profile, activeEmail));
         if (parsedLocal.biomarkers) setBiomarkers(parsedLocal.biomarkers);
         if (parsedLocal.actions) setActions(parsedLocal.actions);
         if (parsedLocal.dailyBenefits) setDailyBenefits(parsedLocal.dailyBenefits);
@@ -1636,7 +1655,7 @@ export default function App() {
         if (serverProfile) {
           const mergedProf = mergeProfiles(serverProfile, profile);
           if (mergedProf) {
-            setProfile(mergedProf);
+            setProfile(sanitizeProfile(mergedProf, activeEmail));
             // Recompute active biomarkers state
             const computedBios: { [key: string]: number | string } = {};
             [...mergedBioHist].filter(b => b.sync_state !== 'delete' && !(mergedProf.deletedBiomarkerLogIds?.[b.id] && (mergedProf.deletedBiomarkerLogIds?.[b.id] || 0) >= (b.updated_at || 0))).sort((a, b) => toYYYYMMDD(a.date).localeCompare(toYYYYMMDD(b.date))).forEach(log => {
@@ -1749,7 +1768,7 @@ export default function App() {
             });
           });
 
-        setProfile(authProfile);
+        setProfile(sanitizeProfile(authProfile, activeEmail));
         setFoodLogs(mergedFoods);
         setBiomarkerHistory(mergedBioHistory);
         setBiomarkers(computedBiomarkers);
@@ -2385,7 +2404,7 @@ export default function App() {
           });
         }
 
-        setProfile(mergedProfile);
+        setProfile(sanitizeProfile(mergedProfile, activeEmail));
         setFoodLogs(mergedFoods);
         setBiomarkerHistory(mergedBioHistory);
         setActions(mergedActions);
@@ -2635,11 +2654,12 @@ export default function App() {
 
       console.warn("Auth check timed out. Falling back to local state.");
       
-      const storageKey = getStorageKey('guest');
+      const lastActiveEmail = localStorage.getItem('last_active_email') || 'cwah.liu@gmail.com';
+      const storageKey = getStorageKey(lastActiveEmail);
       const parsedLocal = await get(storageKey);
       if (parsedLocal) {
         try {
-          if (parsedLocal.profile) setProfile(parsedLocal.profile);
+          if (parsedLocal.profile) setProfile(sanitizeProfile(parsedLocal.profile, lastActiveEmail));
           if (parsedLocal.foodLogs) setFoodLogs(parsedLocal.foodLogs);
           if (parsedLocal.biomarkers) setBiomarkers(parsedLocal.biomarkers);
           if (parsedLocal.biomarkerHistory) setBiomarkerHistory(parsedLocal.biomarkerHistory);

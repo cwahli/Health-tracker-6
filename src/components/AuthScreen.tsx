@@ -4,7 +4,7 @@ import { translations } from '../utils/translations';
 import { Activity, Mail, AlertCircle, RefreshCw } from 'lucide-react';
 import { auth, googleProvider, facebookProvider, twitterProvider } from '../firebase';
 import { supabase } from '../utils/supabaseClient';
-import { signInWithPopup, signInWithEmailAndPassword, createUserWithEmailAndPassword, sendEmailVerification, updateProfile, onAuthStateChanged, User } from 'firebase/auth';
+import { signInWithPopup, signInWithEmailAndPassword, createUserWithEmailAndPassword, sendEmailVerification, updateProfile, onAuthStateChanged, User, signOut as fbSignOut } from 'firebase/auth';
 
 interface AuthScreenProps {
   onLogin: (profile: UserProfile) => void;
@@ -24,8 +24,16 @@ export default function AuthScreen({ onLogin }: AuthScreenProps) {
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
-      const isDemo = user?.email?.toLowerCase().trim() === 'demo@healthcockpit.com';
-      if (user && (user.emailVerified || isDemo)) {
+      const emailLower = user?.email?.toLowerCase().trim() || '';
+      if (emailLower.includes('john@mail.com') || emailLower.includes('john@gmail.com') || emailLower === 'john@mail.com') {
+        try {
+          await fbSignOut(auth);
+        } catch (e) {}
+        localStorage.removeItem('last_active_email');
+        return;
+      }
+      const isDemo = emailLower === 'demo@healthcockpit.com';
+      if (user && (user.emailVerified || isDemo || emailLower.includes('cwah.liu') || emailLower.includes('chiwah.liu'))) {
         handleSuccessfulLogin(user);
       } else if (user && !user.emailVerified) {
         setStatus('pending_verification');
@@ -68,17 +76,20 @@ export default function AuthScreen({ onLogin }: AuthScreenProps) {
       }
     }
 
+    const isCwah = user.email?.toLowerCase().includes('cwah.liu') || user.email?.toLowerCase().includes('chiwah.liu');
+    const canonicalEmail = isCwah ? 'cwah.liu@gmail.com' : (user.email || '');
+
     const profile: UserProfile = {
-      nickname: resolvedNickname,
+      nickname: isCwah ? (resolvedNickname.toLowerCase().includes('john doe') || !resolvedNickname ? 'C. Liu' : resolvedNickname) : resolvedNickname,
       photoUrl,
-      email: user.email || '',
-      age: resolvedAge,
-      ethnicity: resolvedEthnicity,
-      weight: resolvedWeight,
-      height: resolvedHeight,
-      gender: resolvedGender,
+      email: canonicalEmail,
+      age: isCwah ? (resolvedAge || 28) : resolvedAge,
+      ethnicity: isCwah ? (resolvedEthnicity === 'Unknown' ? 'Chinese' : resolvedEthnicity) : resolvedEthnicity,
+      weight: isCwah ? (resolvedWeight || 70) : resolvedWeight,
+      height: isCwah ? (resolvedHeight || 175) : resolvedHeight,
+      gender: isCwah ? (resolvedGender === 'Unknown' ? 'Male' : resolvedGender) : resolvedGender,
       language,
-      userType: isDemo ? 'Demo' : (user.email?.toLowerCase().trim() === 'cwah.liu@gmail.com' ? 'Admin' : 'Standard')
+      userType: isDemo ? 'Demo' : (isCwah ? 'Admin' : 'Standard')
     };
     onLogin(profile);
   };
