@@ -8,8 +8,10 @@ interface ImageSliderProps {
 }
 
 export default function ImageSlider({ images = [], singleImage, altText }: ImageSliderProps) {
-  const allImages = Array.isArray(images) ? [...images] : [];
-  if (singleImage && !allImages.includes(singleImage)) {
+  const allImages = (Array.isArray(images) ? [...images] : [])
+    .filter(img => typeof img === 'string' && img.trim().length > 0 && img !== 'Image reference preserved' && img !== '[image_removed_for_snapshot]' && !img.includes('Image reference preserved'));
+  
+  if (singleImage && typeof singleImage === 'string' && singleImage.trim().length > 0 && singleImage !== 'Image reference preserved' && singleImage !== '[image_removed_for_snapshot]' && !allImages.includes(singleImage)) {
     allImages.unshift(singleImage);
   }
 

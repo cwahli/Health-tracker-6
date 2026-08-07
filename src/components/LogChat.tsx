@@ -2461,7 +2461,11 @@ ${logsText}`);
           );
         };
 
-        const lastFoodLogForJob = [...existingMsgs].reverse().find(m => m.data?.pendingFoodLog)?.pendingFoodLog;
+        const lastFoodLogForJob = job?.result?.pendingFoodLog || 
+          job?.result?.data || 
+          [...existingMsgs].reverse().find(m => m.data?.pendingFoodLog || m.pendingFoodLog)?.data?.pendingFoodLog || 
+          [...existingMsgs].reverse().find(m => m.data?.pendingFoodLog || m.pendingFoodLog)?.pendingFoodLog ||
+          (foodLogs && foodLogs.length > 0 ? foodLogs[foodLogs.length - 1] : null);
         let prunedMealForJob = null;
         if (lastFoodLogForJob) {
           try {
@@ -2478,8 +2482,13 @@ ${logsText}`);
           }
         }
 
-        const lastScoutMsgForJob = [...existingMsgs].reverse().find(m => m.data?.scoutItems && m.data.scoutItems.length > 0);
-        const scoutItemsForJob = lastScoutMsgForJob?.data?.scoutItems || activeScoutItemsFallback || [];
+        const lastScoutMsgForJob = [...existingMsgs].reverse().find(m => 
+          (m.data?.scoutItems && m.data.scoutItems.length > 0) || 
+          (m.data?.agentResult?.scoutItems && m.data.agentResult.scoutItems.length > 0)
+        );
+        const scoutItemsForJob = lastScoutMsgForJob?.data?.scoutItems || 
+          lastScoutMsgForJob?.data?.agentResult?.scoutItems || 
+          activeScoutItemsFallback || [];
 
         getImagesAsBase64(finalImages).then((stagedImagesForSubmit) => {
           fetch('/api/jobs/submit', {
