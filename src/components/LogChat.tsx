@@ -532,8 +532,8 @@ export default function LogChat({
           setDebugLogs(data.logs);
         }
       }
-    } catch (err) {
-      console.warn("Error fetching debug logs:", err);
+    } catch {
+      /* ignore background fetch errors */
     }
   };
 

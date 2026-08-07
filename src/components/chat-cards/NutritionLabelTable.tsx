@@ -250,6 +250,26 @@ export function NutritionLabelTable({ activeScoutItems, onConfirmItem, defaultOp
                 : null);
 
             // Merge keys for table
+            // Defensive guard: if calories are present but every core macro (protein/fat/carbs)
+            // reads exactly 0, that pattern means the source data was never actually captured
+            // for those fields (a real food with real calories always has non-zero macros
+            // somewhere). Treat those specific 0-valued fields as "not captured" and hide them,
+            // rather than showing misleading zeros. A genuine single-field zero (e.g. real
+            // "0g trans fat" sitting next to normal non-zero macros) is left untouched.
+            const parseRowNumber = (raw: any): number | null => {
+              if (raw === undefined || raw === null || raw === '') return null;
+              const m = String(raw).match(/-?\d+(?:\.\d+)?/);
+              return m ? parseFloat(m[0]) : null;
+            };
+            const calsForZeroCheck = parseLabelCalories(item.rawNutritionLabel?.calories ?? item.nutritionFacts?.calories);
+            const macroKeysForZeroCheck = ['protein', 'totalFat', 'totalCarbohydrate', 'carbohydrates'];
+            const macroValsForZeroCheck = macroKeysForZeroCheck
+              .map(k => parseRowNumber(item.rawNutritionLabel?.[k] ?? item.nutritionFacts?.[k]))
+              .filter((v): v is number => v !== null);
+            const hasImplausibleAllZeroMacros = (calsForZeroCheck || 0) > 0 &&
+              macroValsForZeroCheck.length > 0 &&
+              macroValsForZeroCheck.every(v => v === 0);
+
             const allKeys = Array.from(
               new Set([
                 ...(hasRaw ? Object.keys(item.rawNutritionLabel) : []),
@@ -260,7 +280,12 @@ export function NutritionLabelTable({ activeScoutItems, onConfirmItem, defaultOp
               const val = item.rawNutritionLabel?.[k] !== undefined 
                 ? item.rawNutritionLabel?.[k] 
                 : item.nutritionFacts?.[k];
-              return val !== undefined && val !== null && val !== '' && val !== '-' && val !== '--';
+              if (val === undefined || val === null || val === '' || val === '-' || val === '--') return false;
+              if (hasImplausibleAllZeroMacros && !k.toLowerCase().includes('calorie') && !k.toLowerCase().includes('energy')) {
+                const numVal = parseRowNumber(val);
+                if (numVal === 0) return false;
+              }
+              return true;
             });
 
             return (
@@ -322,6 +347,14 @@ export function NutritionLabelTable({ activeScoutItems, onConfirmItem, defaultOp
                           <th className="py-1.5 px-2 font-bold text-theme-text-secondary border-b border-theme-border/50">
                             {(() => {
                                const ssRaw = String(item.rawNutritionLabel?.servingSize || item.nutritionFacts?.servingSize || '').trim();
+                               const totalG = item.estimatedWeightGrams ? Number(item.estimatedWeightGrams) : null;
+                               const ssGramsMatch = ssRaw.match(/^(\d+(?:\.\d+)?)\s*g$/i);
+                               // If the serving size grams exactly equal the Total column's grams, showing
+                               // both is redundant (e.g. "Serving Size (300g)" next to "Total (300g)").
+                               // In that case the serving IS the whole dish, so say so in words instead.
+                               if (ssRaw && ssGramsMatch && totalG && Math.abs(parseFloat(ssGramsMatch[1]) - totalG) < 0.5) {
+                                 return 'Serving Size (1 dish)';
+                               }
                                if (ssRaw) return `Serving Size (${ssRaw})`;
                                const bType = item.rawNutritionLabel?.basisType || item.basisType || (item.source === 'brand_official' || item.brandPriority ? 'per_dish' : 'per_100g');
                                if (bType === 'per_dish' || bType === 'total' || bType === 'per_portion') {

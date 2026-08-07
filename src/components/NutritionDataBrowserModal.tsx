@@ -79,7 +79,7 @@ const toScoutItem = (item: any) => {
       sodium: nuts.sodium != null && nuts.sodium !== '' && nuts.sodium !== '—' ? `${nuts.sodium}mg` : undefined,
       salt: nuts.salt != null && nuts.salt !== '' && nuts.salt !== '—' ? `${nuts.salt}g` : (nuts.sodium ? `${(nuts.sodium / 400).toFixed(1)}g` : undefined)
     },
-    ingredientsList: cleanDescriptionText(item.notes || item.ingredientsList || item.description || ''),
+    ingredientsList: cleanDescriptionText(item.ingredients || item.ingredientsList || item.description || ''),
     isRealTruth: true,
     estimatedWeightGrams: 100
   };
@@ -126,7 +126,7 @@ const toCatalogScoutItem = (item: any) => {
       riboflavin:         safe(n.riboflavin, 'mg'),
       niacin:             safe(n.niacin, 'mg'),
     },
-    ingredientsList: item.notes || item.description || '',
+    ingredientsList: item.ingredients || item.description || '',
     isRealTruth: true,
     estimatedWeightGrams: 100
   };

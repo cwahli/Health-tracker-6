@@ -142,7 +142,9 @@ export async function autoRegisterChainMenuItem(
       return;
     }
 
-    const ingredients = item?.ingredientsList || item?.ingredients || rawLabel?.ingredients || null;
+    const isPlaceholderIngredientText = (s: any) => typeof s === 'string' && s.trim().toLowerCase().startsWith('auto-captured from photo ocr');
+    const rawIngredients = item?.ingredientsList || item?.ingredients || rawLabel?.ingredients || null;
+    const ingredients = isPlaceholderIngredientText(rawIngredients) ? null : rawIngredients;
     const isPartialLocked = lockedKeysList && lockedKeysList.length > 0 && Object.keys(nutrients).length < 4;
 
     if (!existing) {

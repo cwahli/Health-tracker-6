@@ -57,16 +57,18 @@ class JobStoreImpl {
         localStorage.setItem('jobstore_jobs', json);
         return;
       } catch (quotaError) {
-        console.warn('localStorage quota exceeded while saving jobs. Pruning old jobs to free up quota...');
-
         // Separate active vs completed jobs
         const activeJobs = allJobs.filter(j => j.status === 'queued' || j.status === 'running' || j.status === 'draft');
         const finishedJobs = allJobs
           .filter(j => j.status === 'succeeded' || j.status === 'failed' || j.status === 'cancelled')
           .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 
-        // Keep at most 5 most recent finished jobs when quota is tight
-        const keptFinished = finishedJobs.slice(0, 5);
+        // Keep at most 2 most recent finished jobs when quota is tight and strip heavy logs/messages
+        const keptFinished = finishedJobs.slice(0, 2).map(j => ({
+          ...j,
+          liveThoughts: undefined,
+          messages: j.messages ? j.messages.slice(-2) : []
+        }));
         const keptJobs = [...activeJobs, ...keptFinished];
 
         // Purge pruned jobs from in-memory map and ImageStore
@@ -78,11 +80,29 @@ class JobStoreImpl {
           }
         }
 
-        json = serializeJobs(keptJobs);
-        localStorage.setItem('jobstore_jobs', json);
+        try {
+          json = serializeJobs(keptJobs);
+          localStorage.setItem('jobstore_jobs', json);
+        } catch {
+          // If still exceeding, save minimal job records with only core fields
+          const minimalJobs = keptJobs.map(j => ({
+            id: j.id,
+            kind: j.kind,
+            mode: j.mode,
+            status: j.status,
+            progressPercent: j.progressPercent,
+            createdAt: j.createdAt,
+            finishedAt: j.finishedAt
+          }));
+          try {
+            localStorage.setItem('jobstore_jobs', JSON.stringify(minimalJobs));
+          } catch {
+            // Silently retain in-memory state if localStorage is completely filled
+          }
+        }
       }
-    } catch (e) {
-      console.warn('Error saving jobs to localStorage:', e);
+    } catch {
+      // Silently catch unexpected errors
     }
   }
 

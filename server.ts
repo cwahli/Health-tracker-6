@@ -7459,7 +7459,11 @@ Current User Input: "${message}"`) + modeDPromptSuffix;
       parsedData.date = sanitizeString(rawFoodData.date, new Date().toISOString().split("T")[0]);
       parsedData.composition = sanitizeString(rawFoodData.composition, "Unspecified ingredients");
       
-      const totalWeightGrams = sanitizeMealWeight(rawFoodData.weightGrams, 150);
+      const itemsWeightSum = Array.isArray(rawFoodData.itemsBreakdown)
+        ? rawFoodData.itemsBreakdown.reduce((sum: number, it: any) => sum + (Number(it.weightGrams) || 0), 0)
+        : 0;
+      const weightFallback = itemsWeightSum > 0 ? itemsWeightSum : 150;
+      const totalWeightGrams = sanitizeMealWeight(rawFoodData.weightGrams, weightFallback);
       parsedData.weightGrams = totalWeightGrams;
       parsedData.basis_type = 'total';
       parsedData.serving_grams = totalWeightGrams;

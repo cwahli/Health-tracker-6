@@ -62,7 +62,9 @@ export const ComprehensiveNutrientsTable: React.FC<{
     return val !== undefined && val !== null && val !== '' && val !== '—';
   });
 
-  const displayBasis = basisType === 'per_100g' ? 'Per 100g' : 'Per Dish / Portion';
+  const displayBasis = basisType === 'per_100g'
+    ? 'Per 100g'
+    : (basisType === 'total' ? 'Combined Meal Total' : 'Per Dish / Portion');
   const displayServing = servingGrams ? `${servingGrams}g` : '';
 
   return (

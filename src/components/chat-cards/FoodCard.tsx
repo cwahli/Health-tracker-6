@@ -375,8 +375,8 @@ export const ScratchpadMarkdownViewer: React.FC<{ content: any; className?: stri
             }).join('\n');
           }
         }
-      } catch (err) {
-        console.warn('Could not fetch debug logs from endpoint:', err);
+      } catch {
+        /* ignore server fetch errors and fall back to local logs */
       }
 
       // 2. Fallback to localStorage request logs tracker if server endpoint returned empty

@@ -1069,8 +1069,8 @@ export default function FullScreenLogViewer({
           setSessionLogs(formatted);
         }
       }
-    } catch (err) {
-      console.warn("Error fetching debug logs for session:", err);
+    } catch {
+      /* ignore fetch errors */
     } finally {
       setIsLoading(false);
     }
