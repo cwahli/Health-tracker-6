@@ -20,6 +20,7 @@ import { executeMedicalAgent } from './jobs/MedicalAgentExecutor';
 import { getProgressPercent, getStepCeiling } from './jobs/progress';
 import FloatingActionSheet from './components/FloatingActionSheet';
 
+import { saveAgentRequestLog } from './utils/agentLogsTracker';
 import { translations } from './utils/translations';
 import { AVAILABLE_LLMS } from './utils/llm';
 import { PRIMARY_NUTRIENTS, isCoreNutrient, isAdditionalNutrient } from './utils/nutrients';
@@ -1074,6 +1075,39 @@ export default function App() {
                       statusMessage: 'Analysis complete',
                       finishedAt: new Date().toISOString(),
                     });
+
+                    // Save diagnostic logs to log history page
+                    const reqId = serverJob.request_id || job.requestId || job.id;
+                    const summary = pendingFoodLog?.name || messageText || 'Food Analysis';
+                    const rawLogs = cleanResult.backendLogs || '';
+                    let logsList: { timestamp: string; message: string }[] = [];
+                    if (typeof rawLogs === 'string' && rawLogs.trim().length > 0) {
+                      logsList = rawLogs.split('\n').filter(Boolean).map(line => ({
+                        timestamp: new Date().toISOString(),
+                        message: line
+                      }));
+                    }
+                    fetch(`/api/gemini/debug-logs?sessionId=${reqId}`)
+                      .then(res => res.ok ? res.json() : null)
+                      .then(data => {
+                        if (data && Array.isArray(data.logs) && data.logs.length > 0) {
+                          logsList = data.logs;
+                        }
+                        saveAgentRequestLog({
+                          id: reqId,
+                          timestamp: new Date().toISOString(),
+                          summary,
+                          logs: logsList.length > 0 ? logsList : [{ timestamp: new Date().toISOString(), message: `[food_agent] Completed analysis for ${summary}` }]
+                        });
+                      })
+                      .catch(() => {
+                        saveAgentRequestLog({
+                          id: reqId,
+                          timestamp: new Date().toISOString(),
+                          summary,
+                          logs: logsList.length > 0 ? logsList : [{ timestamp: new Date().toISOString(), message: `[food_agent] Completed analysis for ${summary}` }]
+                        });
+                      });
 
                     done = true;
                     return; // Done!

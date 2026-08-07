@@ -11,13 +11,18 @@ export interface AgentRequestLog {
 }
 
 export const saveAgentRequestLog = (requestLog: AgentRequestLog) => {
+  if (!requestLog || !requestLog.id) return;
+
   // Strip large base64 image data before saving to stay within localStorage quota
   const sanitized: AgentRequestLog = {
     ...requestLog,
-    logs: requestLog.logs.map(log => ({
-      ...log,
-      message: log.message.replace(/data:image\/[^;]+;base64,[A-Za-z0-9+/=]{200,}/g, '[image data stripped]')
-    }))
+    logs: (requestLog.logs || []).map(log => {
+      const msgStr = typeof log.message === 'string' ? log.message : String(log.message || '');
+      return {
+        ...log,
+        message: msgStr.replace(/data:image\/[^;]+;base64,[A-Za-z0-9+/=]{200,}/g, '[image data stripped]')
+      };
+    })
   };
   const existing = getAgentRequestLogs();
   
@@ -28,28 +33,27 @@ export const saveAgentRequestLog = (requestLog: AgentRequestLog) => {
     existing.unshift(sanitized);
   }
   
-  // Limit to the last 5 requests to stay well within localStorage quota
-  if (existing.length > 5) {
-    existing.length = 5;
+  // Keep up to 15 requests
+  if (existing.length > 15) {
+    existing.length = 15;
   }
 
   try {
     localStorage.setItem('agent_request_logs', JSON.stringify(existing));
   } catch (error) {
     console.warn("[Storage Quota Exceeded] Attempting to save fewer logs...");
-    // Fallback: keep only the 2 most recent logs to free up space
+    // Fallback: keep fewer logs
     try {
-      if (existing.length > 2) {
-        existing.length = 2;
+      if (existing.length > 5) {
+        existing.length = 5;
         localStorage.setItem('agent_request_logs', JSON.stringify(existing));
       }
     } catch (innerErr) {
-      // Last-ditch: keep only the single most recent log
       try {
-        existing.length = 1;
+        existing.length = 2;
         localStorage.setItem('agent_request_logs', JSON.stringify(existing));
       } catch (lastErr) {
-        console.error("Could not save even a single agent request log to localStorage due to storage constraints.", lastErr);
+        console.error("Could not save agent request log to localStorage due to storage constraints.", lastErr);
       }
     }
   }

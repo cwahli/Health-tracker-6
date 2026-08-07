@@ -57,6 +57,19 @@ interface BiomarkerEntry {
   unit: string;
 }
 
+export function safeJSONStringify(obj: any): string {
+  const seen = new WeakSet();
+  return JSON.stringify(obj, (key, value) => {
+    if (typeof value === 'object' && value !== null) {
+      if (seen.has(value)) {
+        return undefined;
+      }
+      seen.add(value);
+    }
+    return value;
+  });
+}
+
 function parseJsonOffline(jsonText: string): BiomarkerEntry[] {
   const entries: BiomarkerEntry[] = [];
   if (!jsonText) return entries;
@@ -1488,7 +1501,10 @@ ${logsText}`);
         };
         if (assistantMsg.pendingFoodLog) {
           assistantMsg.pendingFoodLog.id = assistantMsg.pendingFoodLog.id || `food_${Date.now()}`;
-          assistantMsg.pendingFoodLog.chatTranscript = [userMsg, assistantMsg];
+          assistantMsg.pendingFoodLog.chatTranscript = [
+            { role: userMsg.role, content: userMsg.content, timestamp: userMsg.timestamp },
+            { role: assistantMsg.role, content: assistantMsg.content, timestamp: assistantMsg.timestamp }
+          ];
         }
         setMessages([welcome, userMsg, assistantMsg], false);
         return;
@@ -1650,7 +1666,10 @@ ${logsText}`);
           };
           if (assistantMsg.pendingFoodLog) {
             assistantMsg.pendingFoodLog.id = assistantMsg.pendingFoodLog.id || `food_${Date.now()}`;
-            assistantMsg.pendingFoodLog.chatTranscript = [userMsg, assistantMsg];
+            assistantMsg.pendingFoodLog.chatTranscript = [
+              { role: userMsg.role, content: userMsg.content, timestamp: userMsg.timestamp },
+              { role: assistantMsg.role, content: assistantMsg.content, timestamp: assistantMsg.timestamp }
+            ];
           }
           setMessages([welcome, userMsg, assistantMsg], false);
         } else if (job.status === 'failed') {
@@ -2307,18 +2326,39 @@ ${logsText}`);
           : [getWelcomeMessage()];
         const updatedMessages = [...existingMsgs, userMsg];
 
-        // Strip big base64 strings from messages stored in JobStore to prevent localStorage bloat/failure
+        // Strip big base64 strings and nested circular references from messages stored in JobStore to prevent localStorage bloat/failure
         const persistMessages = updatedMessages.map(m => {
-          if (m.imageUrl && m.imageUrl.startsWith('data:image/')) {
-            return { ...m, imageUrl: 'Image reference preserved' };
+          let cleaned = { ...m };
+          if (cleaned.imageUrl && typeof cleaned.imageUrl === 'string' && cleaned.imageUrl.startsWith('data:image/')) {
+            cleaned.imageUrl = 'Image reference preserved';
           }
-          if (m.imageUrls) {
-            return {
-              ...m,
-              imageUrls: m.imageUrls.map(url => url.startsWith('data:image/') ? 'Image reference preserved' : url)
+          if (cleaned.imageUrls) {
+            cleaned.imageUrls = cleaned.imageUrls.map(url => (typeof url === 'string' && url.startsWith('data:image/')) ? 'Image reference preserved' : url);
+          }
+          if (cleaned.pendingFoodLog?.chatTranscript) {
+            cleaned.pendingFoodLog = {
+              ...cleaned.pendingFoodLog,
+              chatTranscript: (cleaned.pendingFoodLog.chatTranscript || []).map((t: any) => ({
+                role: t.role,
+                content: t.content,
+                timestamp: t.timestamp
+              }))
             };
           }
-          return m;
+          if (cleaned.data?.pendingFoodLog?.chatTranscript) {
+            cleaned.data = {
+              ...cleaned.data,
+              pendingFoodLog: {
+                ...cleaned.data.pendingFoodLog,
+                chatTranscript: (cleaned.data.pendingFoodLog.chatTranscript || []).map((t: any) => ({
+                  role: t.role,
+                  content: t.content,
+                  timestamp: t.timestamp
+                }))
+              }
+            };
+          }
+          return cleaned;
         });
 
         let updatedProfile = profile ? { ...profile } : null;
@@ -2409,7 +2449,7 @@ ${logsText}`);
             headers: {
               'Content-Type': 'application/json'
             },
-            body: JSON.stringify({
+            body: safeJSONStringify({
               jobId: currentJobId,
               userId: auth.currentUser?.uid || 'anonymous',
               kind: family === 'D' ? 'food_compare' : 'food_log',
