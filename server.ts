@@ -1598,6 +1598,9 @@ JSON SCHEMA STRICT REQUIREMENT:
 
 const app = express();
 
+app.use(express.json({ limit: "15mb" }));
+app.use(express.urlencoded({ extended: true, limit: "15mb" }));
+
 app.post('/api/jobs/upsert', async (req, res) => {
   try {
     const { payload } = req.body;
@@ -1783,9 +1786,9 @@ async function startServer() {
     fs.mkdirSync(SYNC_DIR, { recursive: true });
   }
 
-  // Increase limit to allow base64 uploaded image payloads
-  app.use(express.json({ limit: "15mb" }));
-  app.use(express.urlencoded({ extended: true, limit: "15mb" }));
+  // Increase limit to allow base64 uploaded image payloads (Note: registered early above)
+  // app.use(express.json({ limit: "15mb" }));
+  // app.use(express.urlencoded({ extended: true, limit: "15mb" }));
 
   // Register session tracking middleware for isolated logging
   app.use((req, res, next) => {

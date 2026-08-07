@@ -23,19 +23,25 @@ export interface ServerJobPayload {
 
 export async function submitServerJob(payload: ServerJobPayload): Promise<void> {
   const { jobId, userId = 'anonymous', kind, mode, text, images = [], imageUrls = [] } = payload;
+  const dbKind = kind || 'food_log';
+  const dbMode = mode || 'review';
 
   // 1. Initial status write to Supabase
   if (isSupabaseConfigured) {
-    await supabaseAdmin.from('agent_jobs').upsert({
+    const { error } = await supabaseAdmin.from('agent_jobs').upsert({
       id: jobId,
       user_id: userId,
-      kind,
-      mode,
+      kind: dbKind,
+      mode: dbMode,
       status: 'running',
       progress_percent: 5,
       status_message: 'Starting cloud food analysis...',
       updated_at: new Date().toISOString()
     }, { onConflict: 'id' });
+
+    if (error) {
+      console.error('[ServerJobs] initial upsert failed:', error);
+    }
   }
 
   // 2. Asynchronous cloud execution (fire & forget on server process)

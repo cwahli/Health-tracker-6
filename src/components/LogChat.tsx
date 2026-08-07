@@ -2284,8 +2284,12 @@ ${logsText}`);
               activeScoutItems: []
             })
           })
-          .then(res => {
-            if (!res.ok) throw new Error(`HTTP error ${res.status}`);
+          .then(async (res) => {
+            if (!res.ok) {
+              let detail = '';
+              try { detail = await res.text(); } catch {}
+              throw new Error(`HTTP ${res.status}${detail ? ': ' + detail.slice(0, 300) : ''}`);
+            }
             return res.json();
           })
           .then(data => {
