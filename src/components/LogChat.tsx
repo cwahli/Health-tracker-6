@@ -2243,6 +2243,62 @@ ${logsText}`);
         setSelectedImages([]);
         setSelectedImagesForAnalysis([]);
 
+        // Send images and submit job to server background execution
+        const getImagesAsBase64 = async (imagesList: any[]): Promise<string[]> => {
+          return Promise.all(
+            imagesList.map(img => {
+              if (typeof img === 'string') {
+                return img;
+              }
+              return new Promise<string>((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = () => resolve(reader.result as string);
+                reader.onerror = () => reject(new Error('Failed to read image Blob'));
+                reader.readAsDataURL(img as Blob);
+              });
+            })
+          );
+        };
+
+        getImagesAsBase64(finalImages).then((stagedImagesForSubmit) => {
+          fetch('/api/jobs/submit', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+              jobId: currentJobId,
+              userId: auth.currentUser?.uid || 'anonymous',
+              kind: family === 'D' ? 'food_compare' : 'food_log',
+              mode: submissionMode,
+              text: textToSend,
+              images: stagedImagesForSubmit,
+              history: persistMessages,
+              userProfile: profile || null,
+              engine: selectedModelId || 'gemini-3.5-flash-lite',
+              biomarkersNeedingImprovement: [],
+              remainingAllowance: remainingAllowance || null,
+              activeMeal: null,
+              foodLogs: [],
+              userSelectedMode: submissionMode,
+              activeScoutItems: []
+            })
+          })
+          .then(res => {
+            if (!res.ok) throw new Error(`HTTP error ${res.status}`);
+            return res.json();
+          })
+          .then(data => {
+            console.log('[LogChat] Job successfully submitted to server:', data);
+            JobStore.updateJob(currentJobId, { status: 'running', statusMessage: 'Analyzing on server...' });
+          })
+          .catch(err => {
+            console.error('[LogChat] Server submit failed:', err);
+          });
+        }).catch(err => {
+          console.error('[LogChat] Error converting images:', err);
+        });
+
         // Wake queue runner & notify parent
         JobQueueRunner.wake();
         if (onJobEnqueued) {

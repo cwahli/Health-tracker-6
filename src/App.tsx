@@ -844,6 +844,7 @@ export default function App() {
 
   const currentUserId = auth.currentUser?.uid;
   useEffect(() => {
+    // Multi-device sync hydrates state on app boot from Supabase
     const cleanupSupabaseSync = initSupabaseJobSync(currentUserId);
     return () => {
       cleanupSupabaseSync();
@@ -972,177 +973,91 @@ export default function App() {
             return;
           }
 
-          // 1. Load staged images
-          let stagedImages: string[] = [];
-          if ((job.inputSnapshot as any)?.hasImage) {
-            const blobs = await ImageStore.getImages(job.id);
-            if (blobs && blobs.length > 0) {
-              stagedImages = await Promise.all(
-                blobs.map(async (img) => {
-                  if (typeof img === 'string') return img;
-                  return new Promise<string>((resolve, reject) => {
-                    const reader = new FileReader();
-                    reader.onload = () => resolve(reader.result as string);
-                    reader.onerror = reject;
-                    reader.readAsDataURL(img as Blob);
+          // Durable food jobs execute on server via /api/jobs/submit
+          if (job.kind === 'food_log' || job.kind === 'food_compare') {
+            console.log(`[JobQueueRunner] Job ${job.id} is server-owned. Polling /api/jobs/status...`);
+            let done = false;
+            let pollAttempts = 0;
+            const maxPollAttempts = 120; // 4 minutes
+
+            while (!done && pollAttempts < maxPollAttempts) {
+              if (abortSignal.aborted) {
+                throw new Error('AbortError');
+              }
+              pollAttempts++;
+
+              try {
+                const statusRes = await fetch(`/api/jobs/status?jobId=${job.id}`);
+                if (!statusRes.ok) throw new Error(`HTTP error ${statusRes.status}`);
+                const { jobs } = await statusRes.json();
+                const serverJob = jobs && jobs[0];
+                if (serverJob) {
+                  let progressVal = serverJob.progress_percent || 5;
+                  let statusMsg = serverJob.status_message || 'Analyzing on server...';
+
+                  // Update UI with the progress from the server
+                  JobStore.updateJob(job.id, {
+                    status: serverJob.status,
+                    statusMessage: statusMsg,
+                    progressPercent: progressVal,
                   });
-                })
-              );
-            }
-          }
 
-          // Compute biomarkers needing improvement
-          const outOfRange = biomarkersRef.current ? Object.entries(biomarkersRef.current)
-            .map(([name, value]) => ({ name, value, status: 'normal', unit: '' }))
-            : [];
+                  if (serverJob.status === 'succeeded') {
+                    const cleanResult = serverJob.clean_result;
+                    const pendingFoodLog = cleanResult?.pendingFoodLog || cleanResult;
+                    const resultData = cleanResult?.pendingFoodLog || cleanResult;
 
-          // Re-read checkpoint from JobStore each attempt
-          const currentJob = JobStore.getJob(job.id) || job;
-          const cp = currentJob.checkpoint;
-          const skipScout = !!(cp && (cp.scoutItems?.length || cp.scoutItems));
-          if (skipScout) {
-            console.log(`[Job] checkpoint=scout skipScout=true`);
-          }
+                    // Reconstruct messages for UI if missing or not present
+                    let updatedMessages = job.messages || [];
+                    const hasAssistantMsg = updatedMessages.some(m => m.role === 'assistant');
+                    if (!hasAssistantMsg && resultData) {
+                      const assistantMsg: any = {
+                        id: `msg_assistant_${Date.now()}`,
+                        role: 'assistant',
+                        content: resultData.message || resultData.reply || resultData.globalSummary || 'Analysis complete.',
+                        timestamp: new Date().toISOString(),
+                        agentResult: resultData,
+                        agentType: 'food',
+                        pendingFoodLog: pendingFoodLog,
+                        data: {
+                          pendingFoodLog: pendingFoodLog,
+                          hasImage: !!(serverJob.photo_url || (job.inputSnapshot as any)?.hasImage),
+                          scoutItems: serverJob.clean_result?.scoutItems || [],
+                          scoutContentType: serverJob.clean_result?.scoutContentType || 'visual',
+                          mode: serverJob.mode || 'review',
+                          agentResult: resultData.agentResult || {}
+                        }
+                      };
+                      updatedMessages = [...updatedMessages, assistantMsg];
+                    }
 
-          // 2. Prepare and run executeFoodAgent
-          const executorInput = {
-            jobId: job.id,
-            text: job.inputSnapshot?.text || '',
-            images: stagedImages,
-            photoUrl: job.photoUrl,
-            
-            
-            mode: ((job.inputSnapshot as any)?.mode || 'review') as 'review' | 'compare' | 'edit',
-            lockedModeFamily: job.lockedModeFamily,
-            profile: profileRef.current,
-            modelId: localStorage.getItem('selectedModelId') || 'gemini-3.5-flash-lite',
-            requestId: job.requestId || `job_req_${Date.now()}`,
-            activeFoodLogs: foodLogsRef.current,
-            outOfRangeBiomarkers: outOfRange,
-            messages: job.messages || [],
-            checkpoint: cp,
-            skipScout: skipScout,
-            activeScoutItems: cp?.scoutItems,
-            scoutContentType: cp?.scoutContentType
-          };
+                    JobStore.updateJob(job.id, {
+                      status: 'succeeded',
+                      finishedAt: new Date().toISOString(),
+                      progressPercent: 100,
+                      statusMessage: 'Completed successfully',
+                      result: cleanResult,
+                      messages: updatedMessages
+                    });
 
-          let resData: any = null;
-          let progressPercent = 0;
-
-          for await (const event of executeFoodAgent(executorInput)) {
-            if (abortSignal.aborted) {
-              throw new Error('AbortError');
-            }
-
-            if (event.type === 'progress') {
-              const stepVal = event.stepKey ? getProgressPercent(event.stepKey) : (event.progressPercent || 20);
-              progressPercent = Math.max(progressPercent, stepVal);
-              JobStore.updateJob(job.id, {
-                statusMessage: event.statusMessage || 'Analyzing...',
-                progressPercent
-              });
-            } else if (event.type === 'partial' && event.partialThoughts) {
-              const thoughts = event.partialThoughts;
-              const statusMsg = thoughts.dietitian
-                ? `Dietitian reasoning:\n${thoughts.dietitian.slice(-100)}`
-                : thoughts.scout
-                ? `Scout reasoning:\n${thoughts.scout.slice(-100)}`
-                : 'Processing...';
-
-              const stageKey = thoughts.activeStage || (thoughts.dietitian ? 'dietitian' : 'scout');
-              const basePercent = getProgressPercent(stageKey);
-              const ceiling = getStepCeiling(stageKey);
-              progressPercent = Math.min(ceiling, Math.max(progressPercent, basePercent));
-
-              JobStore.updateJob(job.id, {
-                status: 'running',
-                statusMessage: statusMsg,
-                progressPercent,
-                liveThoughts: {
-                  scout: thoughts.scout,
-                  dietitian: thoughts.dietitian,
-                  backendLogs: thoughts.backendLogs,
-                  dbSearchLog: thoughts.dbSearchLog,
-                  activeStage: thoughts.activeStage,
+                    done = true;
+                    return; // Done!
+                  } else if (serverJob.status === 'failed') {
+                    throw new Error(serverJob.status_message || 'Server job failed');
+                  }
                 }
-              });
-            } else if (event.type === 'checkpoint' && event.checkpoint) {
-              JobStore.updateJob(job.id, {
-                checkpoint: event.checkpoint
-              });
-            } else if (event.type === 'done') {
-              resData = event.data;
-            } else if (event.type === 'error') {
-              const errClass = event.errorClass || 'permanent';
-              const err = new Error(event.message || 'Analysis failed');
-              (err as any).class = errClass;
-              throw err;
-            }
-          }
-
-          if (abortSignal.aborted) {
-            throw new Error('AbortError');
-          }
-
-          if (!resData) {
-            throw new Error('No response data returned from executor');
-          }
-
-          let updatedMessages = job.messages || [];
-          const foodLogObject = resData?.data || null;
-          if (foodLogObject) {
-            if (!foodLogObject.id) {
-              foodLogObject.id = `food_${Date.now()}`;
-            }
-            try {
-              const imgs = await ImageStore.getImages(job.id);
-              if (imgs && imgs.length > 0) {
-                foodLogObject.imageUrls = imgs.map(img => typeof img === 'string' ? img : URL.createObjectURL(img as Blob));
-                foodLogObject.imageUrl = foodLogObject.imageUrls[0];
+              } catch (pollErr) {
+                console.warn('[JobQueueRunner] Error polling status:', pollErr);
               }
-            } catch (imgErr) {
-              console.warn('[App] Failed to load images from ImageStore for foodLogObject:', imgErr);
+
+              await new Promise(resolve => setTimeout(resolve, 2000));
             }
+
+            if (!done) {
+              throw new Error('Timeout waiting for server background job');
+            }
+            return;
           }
-
-          if (resData?.data || resData?.message || resData?.reply || resData?.globalSummary || resData?.comparison) {
-            const assistantMsg: any = {
-              id: `msg_assistant_${Date.now()}`,
-              role: 'assistant',
-              content: resData.message || resData.reply || resData.globalSummary || 'Analysis complete.',
-              timestamp: new Date().toISOString(),
-              agentResult: resData,
-              agentType: 'food',
-              pendingFoodLog: foodLogObject,
-              data: {
-                pendingFoodLog: foodLogObject, // REQUIRED for FoodCard
-                hasImage: !!(foodLogObject?.imageUrl || foodLogObject?.imageUrls?.length || (job.inputSnapshot as any)?.hasImage),
-                scoutItems: resData.scoutItems || [],
-                scoutContentType: resData.scoutContentType,
-                mode: resData.mode || (job.inputSnapshot as any)?.mode || 'review',
-                comparison: resData.comparison,
-                agentResult: resData.agentResult || {}
-              }
-            };
-            updatedMessages = [...updatedMessages, assistantMsg];
-          }
-
-          const normalizedResult = {
-            pendingFoodLog: foodLogObject,
-            scoutItems: resData?.scoutItems || [],
-            raw: resData
-          };
-
-          JobStore.updateJob(job.id, {
-            status: 'succeeded',
-            finishedAt: new Date().toISOString(),
-            progressPercent: 100,
-            statusMessage: 'Completed successfully',
-            result: normalizedResult,
-            messages: updatedMessages
-          });
-
-          return;
 
         } catch (error: any) {
           lastError = error;

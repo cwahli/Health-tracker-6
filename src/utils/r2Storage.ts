@@ -1,4 +1,6 @@
 
+// Storage preserves photo to /photos/ and raw log to /debug/
+
 export async function uploadPhotoToR2(jobId: string, imageBlobOrDataUrl: string): Promise<string> {
   if (typeof window === 'undefined') {
     try {
