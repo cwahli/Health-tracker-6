@@ -1687,7 +1687,7 @@ process.on('unhandledRejection', (reason) => {
   console.error('[UNHANDLED REJECTION]', reason);
 });
 const imageSearchCache = new Map<string, any>();
-const PORT = 3000;
+const PORT = Number(process.env.PORT) || 3000;
 const SERVER_START_TIME = Date.now();
 
 async function startServer() {
@@ -5538,12 +5538,19 @@ function parseServingSizeGrams(ssVal: string, totalItemWeight: number): number {
         // verified zero (e.g. a menu explicitly listing "Protein 0g"). Missing fields
         // (null/undefined in the source) are free to be filled by the component/USDA
         // backfill below; a genuinely recorded zero must never be overwritten later.
-        const proteinKnown = truthMatch.protein != null;
-        const fatKnown = truthMatch.fat != null;
-        const satFatKnown = truthMatch.saturatedFat != null;
-        const sodiumKnown = truthMatch.sodium != null;
-        const carbsKnown = truthMatch.carbohydrates != null || truthMatch.carbs != null;
-        const fibreKnown = truthMatch.totalFibre != null || truthMatch.fiber != null;
+        // If a brand or label match has calories > 10 but ALL three major macros (protein, carbohydrates, fat) are 0 (or null/undefined),
+        // we treat those zeros as placeholder/unrecorded rather than genuine zero locks. This allows the first-principles component backfill to calculate and complete them.
+        const isPlaceholderZeroMacros = Number(truthMatch.calories || 0) > 10 &&
+          (truthMatch.protein === 0 || truthMatch.protein == null) &&
+          (truthMatch.carbohydrates === 0 || truthMatch.carbohydrates == null || truthMatch.carbs === 0 || truthMatch.carbs == null) &&
+          (truthMatch.fat === 0 || truthMatch.fat == null || truthMatch.totalFat === 0 || truthMatch.totalFat == null);
+
+        const proteinKnown = truthMatch.protein != null && (!isPlaceholderZeroMacros || truthMatch.protein !== 0);
+        const fatKnown = (truthMatch.fat != null || truthMatch.totalFat != null) && (!isPlaceholderZeroMacros || (truthMatch.fat !== 0 && truthMatch.totalFat !== 0));
+        const satFatKnown = truthMatch.saturatedFat != null && (!isPlaceholderZeroMacros || truthMatch.saturatedFat !== 0);
+        const sodiumKnown = truthMatch.sodium != null && (!isPlaceholderZeroMacros || truthMatch.sodium !== 0);
+        const carbsKnown = (truthMatch.carbohydrates != null || truthMatch.carbs != null) && (!isPlaceholderZeroMacros || (truthMatch.carbohydrates !== 0 && truthMatch.carbs !== 0));
+        const fibreKnown = (truthMatch.totalFibre != null || truthMatch.fiber != null) && (!isPlaceholderZeroMacros || (truthMatch.totalFibre !== 0 && truthMatch.fiber !== 0));
 
         // Durable lock map: survives cooking, reality checks, aggregation, and receipt.
         // Only lock values that the source actually provided (after serving rescale below).
@@ -5601,6 +5608,11 @@ function parseServingSizeGrams(ssVal: string, totalItemWeight: number): number {
             if (truthMatch.nutrients[k] !== undefined && truthMatch.nutrients[k] !== null) {
               const raw = Number(truthMatch.nutrients[k]);
               if (!Number.isFinite(raw)) continue;
+              
+              if (isPlaceholderZeroMacros && raw === 0 && ['protein', 'totalFat', 'fat', 'carbohydrates', 'carbs', 'saturatedFat', 'satFat', 'sodium', 'totalFibre', 'fiber'].includes(k)) {
+                continue;
+              }
+              
               const scaled = (truthServingGrams > 0 && itemWeight > 0 && truthServingGrams !== itemWeight)
                 ? raw * (itemWeight / truthServingGrams)
                 : raw;
@@ -5640,6 +5652,8 @@ function parseServingSizeGrams(ssVal: string, totalItemWeight: number): number {
           addDebugLog(`[TruthLock] cleared locks after REJECT for "${item.originalName || item.keyword}"`);
         } else {
           isTruthAnchored = true;
+          const dbgStr = `[Truth Data Extraction DEBUG] truthMatch.nutrients = ${JSON.stringify(truthMatch?.nutrients)}, truthMatch.protein = ${truthMatch?.protein}, proteinKnown=${proteinKnown}, isPlaceholderZeroMacros=${isPlaceholderZeroMacros}, lockedNutrientKeys=${Array.from(lockedNutrientKeys).join(',')}`;
+          addDebugLog(dbgStr);
           primaryDbSource = truthMatch.source === 'label' ? 'label' : (truthMatch.source === 'brand_official' ? 'brand_official' : 'web_search');
           primaryDbId = truthMatch.id || `${primaryDbSource}_${item.scoutIndex}`;
           primaryBaseMatchName = truthMatch.name || item.originalName || item.keyword;
@@ -5769,6 +5783,7 @@ function parseServingSizeGrams(ssVal: string, totalItemWeight: number): number {
 
           primaryBase100g = {
             servingSizeGrams: 100,
+            basisType: 'per_100g' as any,
             calories: itemWeight > 0 ? Math.round((webCals / itemWeight) * 100) : webCals,
             protein: itemWeight > 0 ? Math.round(((webProt / itemWeight) * 100) * 10) / 10 : webProt,
             totalFat: itemWeight > 0 ? Math.round(((webFat / itemWeight) * 100) * 10) / 10 : webFat,
@@ -7878,9 +7893,25 @@ Current User Input: "${message}"`) + modeDPromptSuffix;
 
           const rawItem = rawFoodData.itemsBreakdown?.[idx] || {};
 
+          // Reconcile item nutrients: prefer preMatch nutrients if available, or item/rawItem nutrients
+          const baseNutrients = item.nutrients || rawItem.nutrients || {};
+          const preNutrients = preMatch?.nutrients || {};
+          const finalItemNutrients: Record<string, number> = {};
+          
+          NUTRIENT_KEYS.forEach((k: string) => {
+            const preVal = preNutrients[k] !== undefined && preNutrients[k] !== null ? Number(preNutrients[k]) : 0;
+            const baseVal = baseNutrients[k] !== undefined && baseNutrients[k] !== null ? Number(baseNutrients[k]) : 0;
+            if (baseVal <= 0 && preVal > 0) {
+              finalItemNutrients[k] = preVal;
+            } else {
+              finalItemNutrients[k] = baseVal > 0 ? baseVal : preVal;
+            }
+          });
+
           return {
             ...rawItem,
             ...item,
+            nutrients: finalItemNutrients,
             chainName: item.chainName || preMatch?.chainName || rawItem.chainName || null,
             rawNutritionLabel: item.rawNutritionLabel || preMatch?.rawNutritionLabel || rawItem.rawNutritionLabel || null,
             originalName: item.originalName || preMatch?.originalName || rawItem.originalName || null,
@@ -7895,8 +7926,8 @@ Current User Input: "${message}"`) + modeDPromptSuffix;
               (Array.isArray(preMatch?.componentsDetailList) && preMatch.componentsDetailList.length >= 2) ||
               (Array.isArray(item.componentsDetailList) && item.componentsDetailList.length >= 2)
             ),
-            primaryBase100g: preMatch?.primaryBase100g || null,
-            primaryBaseMatchName: preMatch?.primaryBaseMatchName || null,
+            primaryBase100g: preMatch?.primaryBase100g || item.primaryBase100g || null,
+            primaryBaseMatchName: preMatch?.primaryBaseMatchName || item.primaryBaseMatchName || null,
             primaryBaseWeightG: preMatch?.primaryBaseWeightG || item.weightGrams,
             componentsDetailList: preMatch?.componentsDetailList || item.componentsDetailList || [],
             cookingAdded: preMatch?.cookingAdded || { calories: 0, fat: 0, satFat: 0, sodium: 0 },
@@ -7905,6 +7936,19 @@ Current User Input: "${message}"`) + modeDPromptSuffix;
             ingredientsList: preMatch?.ingredientsList || item.ingredientsList || rawItem.ingredientsList || null
           };
         });
+
+        // Re-aggregate grand totals from final itemsBreakdown to ensure meal-level consistency
+        const grandTotals: Record<string, number> = {};
+        NUTRIENT_KEYS.forEach((k: string) => { grandTotals[k] = 0; });
+        parsedData.itemsBreakdown.forEach((it: any) => {
+          if (it.nutrients) {
+            addDebugLog(`[Nutrient Final Check] "${it.canonicalDbName || it.name}" finalItemNutrients: ${JSON.stringify(it.nutrients)}`);
+            NUTRIENT_KEYS.forEach((k: string) => {
+              grandTotals[k] = Math.round(((grandTotals[k] || 0) + (Number(it.nutrients[k]) || 0)) * 10) / 10;
+            });
+          }
+        });
+        parsedData.nutrients = grandTotals;
 
         // Automated 'Sanity Check' Validation Layer
         parsedData.itemsBreakdown.forEach((item: any) => {

@@ -106,7 +106,10 @@ export function aggregateItemsNutrients(
          }
       }
 
-      const baseFactor = baseW / 100;
+      const isDishBasis = raw100.basisType === 'total' || raw100.basisType === 'per_dish';
+      const baseFactor = isDishBasis ? 1 : (baseW / 100);
+
+      addDebugLog(`[Nutrient] "${canonicalName}" multi-component aggregation. raw100=${JSON.stringify(raw100)}, baseW=${baseW}, baseFactor=${baseFactor}`);
 
       // 1. Calculate base ingredient nutrients
       const portionBaseCal = Math.round((raw100.calories || 0) * baseFactor);
@@ -248,28 +251,29 @@ export function aggregateItemsNutrients(
         itemNutrients.isUnverified = true;
       }
 
-      // STEP 2: If USDA/OFF match found, override core-11 with verified DB data (reinforcement)
-      if ((dbSource === "usda" || dbSource === "off" || dbSource === "backend_calculated") && dbId) {
+      // STEP 2: Override or reinforce core-11 with verified DB data from dbMatchMap or databaseMatchesArray
+      if (dbId) {
         const hasInMap = dbMatchMap.has(dbId);
         const match = !hasInMap ? databaseMatchesArray.find((m: any) => m.id === dbId) : null;
         if (hasInMap) {
           const baseNutrientsPer100g = dbMatchMap.get(dbId);
-          const factor = itemWeight / 100;
+          addDebugLog(`[Nutrient] "${canonicalName}" STEP 2 fallback override. baseNutrientsPer100g=${JSON.stringify(baseNutrientsPer100g)}`);
+          const factor = ((baseNutrientsPer100g as any)?.basisType === 'total' || (baseNutrientsPer100g as any)?.basisType === 'per_dish') ? 1 : (itemWeight / 100);
           for (const key of NUTRIENT_KEYS) {
-            if (baseNutrientsPer100g[key] !== undefined) {
+            if (baseNutrientsPer100g[key] !== undefined && baseNutrientsPer100g[key] !== null) {
               itemNutrients[key] = parseFloat((baseNutrientsPer100g[key] * factor).toFixed(2));
             }
           }
-          addDebugLog(`[Nutrient] "${canonicalName}" core-11 reinforced by USDA/OFF dbMatchMap.`);
+          addDebugLog(`[Nutrient] "${canonicalName}" core-11 reinforced by dbMatchMap (source=${dbSource}, dbId=${dbId}).`);
         } else if (match) {
           const baseNutrientsPer100g = dbSource === "usda" ? extractUSDANutrientsPer100g(match) : extractOFFNutrientsPer100g(match);
-          const factor = itemWeight / 100;
+          const factor = ((baseNutrientsPer100g as any)?.basisType === 'total' || (baseNutrientsPer100g as any)?.basisType === 'per_dish') ? 1 : (itemWeight / 100);
           for (const key of NUTRIENT_KEYS) {
-            if (baseNutrientsPer100g[key] !== undefined) {
+            if (baseNutrientsPer100g[key] !== undefined && baseNutrientsPer100g[key] !== null) {
               itemNutrients[key] = parseFloat((baseNutrientsPer100g[key] * factor).toFixed(2));
             }
           }
-          addDebugLog(`[Nutrient] "${canonicalName}" core-11 reinforced by USDA/OFF match object.`);
+          addDebugLog(`[Nutrient] "${canonicalName}" core-11 reinforced by match object.`);
         }
       }
     }

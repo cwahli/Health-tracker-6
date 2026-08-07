@@ -26,7 +26,7 @@ import { PRIMARY_NUTRIENTS, isCoreNutrient, isAdditionalNutrient } from './utils
 import { getLocalFallbackReport } from './utils/fallbackReport';
 import { getDemoProfile, getDemoBiomarkerHistory, getDemoFoodLogs, getDemoReport, DemoProfileType } from './utils/demoData';
 import { getAvailableCredits, deductAgentCredits } from './utils/creditManager';
-import { Plus, HeartHandshake, RefreshCw, Sparkles, Stethoscope, Utensils, Loader, CloudLightning, AlertTriangle } from 'lucide-react';
+import { Plus, HeartHandshake, RefreshCw, Sparkles, Stethoscope, Utensils, Loader, CloudLightning, AlertTriangle, Activity } from 'lucide-react';
 import { auth, db } from './firebase';
 import { onAuthStateChanged, signOut as fbSignOut } from 'firebase/auth';
 import { trackApiCall, setActiveQueryId, generateQueryId, initializeFetchInterceptor } from './utils/apiTracker';
@@ -463,7 +463,22 @@ export default function App() {
     setDismissedBmiAlerts(updated);
     localStorage.setItem('dismissedBmiAlerts', JSON.stringify(updated));
   };
-  const [activeTab, setActiveTab] = useState<'home' | 'insights' | 'food' | 'medical' | 'trends'>('home');
+  const [activeTabRaw, setActiveTabRaw] = useState<'home' | 'insights' | 'health' | 'food' | 'medical' | 'trends'>('home');
+  const [healthSubTab, setHealthSubTab] = useState<'biomarker' | 'insight'>('biomarker');
+
+  const setActiveTab = (tab: 'home' | 'insights' | 'health' | 'food' | 'medical' | 'trends') => {
+    if (tab === 'medical') {
+      setActiveTabRaw('health');
+      setHealthSubTab('biomarker');
+    } else if (tab === 'insights') {
+      setActiveTabRaw('health');
+      setHealthSubTab('insight');
+    } else {
+      setActiveTabRaw(tab);
+    }
+  };
+
+  const activeTab = activeTabRaw;
 
   useEffect(() => {
     const qid = generateQueryId();
@@ -478,7 +493,11 @@ export default function App() {
       }
     };
     window.addEventListener('switch-tab', handleSwitchTab);
-    return () => window.removeEventListener('switch-tab', handleSwitchTab);
+    window.addEventListener('navigate-tab', handleSwitchTab);
+    return () => {
+      window.removeEventListener('switch-tab', handleSwitchTab);
+      window.removeEventListener('navigate-tab', handleSwitchTab);
+    };
   }, []);
   const [initiallyExpandedFoodId, setInitiallyExpandedFoodId] = useState<string | null>(null);
   const [syncState, setSyncState] = useState<'synced' | 'syncing' | 'local' | 'conflict'>('local');
@@ -1205,7 +1224,7 @@ export default function App() {
       unsubscribeJobStore();
     };
   }, []);
-  const isFoodChatOpen = !!activeJobId && JobStore.getJob(activeJobId)?.kind !== 'medical';
+  const isFoodChatOpen = !!activeJobId && (JobStore.getJob(activeJobId)?.kind === 'food_log' || JobStore.getJob(activeJobId)?.kind === 'food_compare');
   const setIsFoodChatOpen = (isOpen: boolean) => {
     if (!isOpen) {
       setActiveJobId(null);
@@ -5417,97 +5436,6 @@ export default function App() {
             }}
           />
         )}
-        {activeTab === 'insights' && (
-          <InsightsTab
-            profile={profile}
-            foodLogs={foodLogs}
-            biomarkers={biomarkers}
-            biomarkerHistory={biomarkerHistory}
-            onDataReviewStateChange={setDataReviewSharedState}
-            onDeleteBiomarker={handleDeleteBiomarker}
-            onFlagNotUsed={handleFlagNotUsedGlobal}
-            onRestoreNotUsedGlobal={handleRestoreNotUsedGlobal}
-            onDeleteMultipleBiomarkers={handleDeleteMultipleBiomarkers}
-            calibratingBatchIdx={calibratingBatchIdx}
-            calibratingAgentType={calibratingAgentType}
-            report={report}
-            draftReport={draftReport}
-            onAcceptReport={handleAcceptReport}
-            onRejectReport={handleRejectReport}
-            selectedModelId={selectedModelId}
-            onChangeModelId={setSelectedModelId}
-            onGenerateReport={handleGenerateReport}
-            isGenerating={isGenerating}
-            onNavigateToTab={setActiveTab as any}
-                        onOpenMedicalChat={() => {
-                          setActiveAgentType(null);
-                          setPrefillMessage(null);
-                          setActiveReviewBiomarkerKey(undefined);
-                          setIsMedicalChatOpen(true);
-                        }}
-            onUpdateProfile={async (updatedProfile) => {
-              setProfile(updatedProfile);
-              await saveAndSync(updatedProfile, foodLogs, biomarkers, biomarkerHistory, actions, dailyBenefits, report);
-            }}
-            onUpdateHistory={async (updatedHistory, newBiomarkers, updatedProfileArg) => {
-              setBiomarkerHistory(updatedHistory);
-              setBiomarkers(newBiomarkers);
-              if (updatedProfileArg) setProfile(updatedProfileArg);
-              
-              // Diff history to find what changed to save writes
-              const changedLogs = updatedHistory.filter(newLog => {
-                const oldLog = biomarkerHistory.find(old => old.id === newLog.id);
-                if (!oldLog) return true; // new log
-                return JSON.stringify(oldLog) !== JSON.stringify(newLog); // changed log
-              });
-              
-// Sync deferred to manual button click
-              
-              await saveAndSync(updatedProfileArg || profile, foodLogs, newBiomarkers, updatedHistory, actions, dailyBenefits, report, { type: 'profile' });
-            }}
-            batchSize={batchSize}
-            onChangeBatchSize={(size) => {
-              setBatchSize(size);
-              try {
-                localStorage.setItem('biomarker_batch_size', size.toString());
-              } catch (e) {}
-            }}
-            onOpenAgentChat={(agentType: 'agent1' | 'agent2' | 'agent3' | 'agent4' | 'agent5' | 'health_baseline' | 'agent7' | 'data_review' | 'biomarker_review', options?: {
-              biomarkerKey?: string; 
-              prefillMessage?: string; 
-              dataReviewBatchIdx?: number | string; 
-              dataReviewBatchKeys?: string[];
-              remainingText?: string;
-              extractedData?: any[];
-              currentBatch?: number;
-              estimatedTotalMarkers?: number | null;
-            }) => {
-              setActiveAgentType(agentType);
-              setPrefillMessage(options?.prefillMessage || null);
-              setActiveReviewBiomarkerKey(options?.biomarkerKey);
-              setActiveDataReviewBatchIdx(options?.dataReviewBatchIdx !== undefined ? options.dataReviewBatchIdx : null);
-              setActiveDataReviewBatchKeys(options?.dataReviewBatchKeys || []);
-              setActiveDataReviewRemainingText(options?.remainingText || '');
-              setActiveDataReviewExtractedYaml(options?.extractedData || []);
-              setActiveDataReviewCurrentBatch(options?.currentBatch || 1);
-              setActiveDataReviewEstimatedTotalMarkers(options?.estimatedTotalMarkers !== undefined ? options.estimatedTotalMarkers : null);
-                            setIsMedicalChatOpen(true);
-            }}
-            onDeleteAnalysis={handleDeleteAnalysis}
-            onArchiveAnalysis={async (id) => {
-              if (profile.agentAnalyses) {
-                const updatedProfile = {
-                  ...profile,
-                  agentAnalyses: profile.agentAnalyses.map(a => a.id === id ? { ...a, archived: true } : a)
-                };
-                setProfile(updatedProfile);
-                await saveAndSync(updatedProfile, foodLogs, biomarkers, biomarkerHistory, actions, dailyBenefits, report, { type: 'analysis', targetId: id });
-              }
-            }}
-            onAgentAnalysisSaved={handleAgentAnalysisSaved}
-            onOpenFrontDesk={() => setIsFrontDeskOpen(true)}
-          />
-        )}
         {activeTab === 'food' && (
           <ErrorBoundary>
           <FoodHistoryTab
@@ -5530,58 +5458,169 @@ export default function App() {
           />
           </ErrorBoundary>
         )}
-        {activeTab === 'medical' && (
-          <MedicalHistoryTab
-            profile={profile}
-            biomarkers={biomarkers}
-            biomarkerHistory={biomarkerHistory}
-            hideSensitive={hideSensitive}
-            onViewJob={(jobId) => {
-              setActiveJobId(jobId);
-            }}
-            onDeleteEmptyBiomarkers={handleDeleteEmptyBiomarkers}
-            onUpdateProfile={async (updates) => {
-              const updatedProfile = { ...profile, ...updates };
-              setProfile(updatedProfile);
-              await saveAndSync(updatedProfile, foodLogs, biomarkers, biomarkerHistory, actions, dailyBenefits, report, { type: 'profile' });
-            }}
-            onEditBiomarkerLog={handleEditBiomarkerLog}
-            onLogMedical={handleLogMedical}
-            onDeleteBiomarker={handleDeleteBiomarker}
-            onFlagNotUsed={handleFlagNotUsedGlobal}
-            onFlagNotUsedLocal={handleFlagNotUsedLocal}
-            onRestoreNotUsedLocal={handleRestoreNotUsedLocal}
-            onRestoreNotUsedGlobal={handleRestoreNotUsedGlobal}
-            onDeleteMultipleBiomarkers={handleDeleteMultipleBiomarkers}
-            onDeleteBiomarkerLog={handleDeleteBiomarkerLog}
-            onDeleteBiomarkerFromLog={handleDeleteBiomarkerFromLog}
-            onStandardizeUnits={handleStandardizeBiomarkerUnits}
-            onCombineBiomarkers={handleCombineBiomarkers}
-            onBatchCombineBiomarkers={handleBatchCombineBiomarkers}
-            onBatchConsolidate={handleBatchConsolidate}
-            onReviewWithAgent={(keys) => {
-              const userIdentifier = profile?.email?.toLowerCase().replace(/[^a-z0-9]/g, '_') || 'guest';
-              localStorage.setItem(`agent1_custom_batch_keys_${userIdentifier}`, JSON.stringify(keys));
-              sessionStorage.setItem('auto_open_custom_batch_modal', 'true');
-              setActiveTab('insights');
-            }}
-            onOpenAgentChat={(agentType, options) => {
-              setActiveAgentType(agentType);
-              setPrefillMessage(options?.prefillMessage || null);
-              setActiveReviewBiomarkerKey(options?.biomarkerKey);
-              if (options?.dataReviewBatchIdx !== undefined) setActiveDataReviewBatchIdx(options.dataReviewBatchIdx);
-              if (options?.dataReviewBatchKeys) setActiveDataReviewBatchKeys(options.dataReviewBatchKeys);
-              setIsMedicalChatOpen(true);
-            }}
-            
-            onApplyCalculation={handleApplyCalculation}
-            selectedModelId={selectedModelId}
-            onChangeModelId={setSelectedModelId}
-            hasBmiAlert={profile ? hasBmiPendingAlert(profile, dismissedBmiAlerts, report) : false}
-            onDismissBmiAlert={handleDismissBmiAlert}
-            onAgentAnalysisSaved={handleAgentAnalysisSaved}
-            onDeleteAnalysis={handleDeleteAnalysis}
-          />
+        {(activeTab === 'health' || activeTab === 'insights' || activeTab === 'medical') && (
+          <div className="max-w-md mx-auto">
+            {/* Tablet Sub-tab Toggle Bar */}
+            <div className="px-3 pt-3">
+              <div className="bg-slate-200/90 dark:bg-slate-800/90 p-1 rounded-2xl flex items-center shadow-sm max-w-xs mx-auto mb-2 border border-theme-border/60 backdrop-blur-md">
+                <button
+                  onClick={() => setHealthSubTab('biomarker')}
+                  className={`flex-1 py-1.5 px-3 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1.5 ${
+                    healthSubTab === 'biomarker'
+                      ? 'bg-white dark:bg-slate-900 text-indigo-600 dark:text-indigo-400 shadow-sm'
+                      : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                  }`}
+                >
+                  <Activity className="w-3.5 h-3.5 stroke-[2.5]" />
+                  Biomarker
+                </button>
+                <button
+                  onClick={() => setHealthSubTab('insight')}
+                  className={`flex-1 py-1.5 px-3 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1.5 ${
+                    healthSubTab === 'insight'
+                      ? 'bg-white dark:bg-slate-900 text-indigo-600 dark:text-indigo-400 shadow-sm'
+                      : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                  }`}
+                >
+                  <Sparkles className="w-3.5 h-3.5 stroke-[2.5]" />
+                  Insight
+                </button>
+              </div>
+            </div>
+
+            {healthSubTab === 'biomarker' ? (
+              <MedicalHistoryTab
+                profile={profile}
+                biomarkers={biomarkers}
+                biomarkerHistory={biomarkerHistory}
+                hideSensitive={hideSensitive}
+                onViewJob={(jobId) => {
+                  setActiveJobId(jobId);
+                }}
+                onDeleteEmptyBiomarkers={handleDeleteEmptyBiomarkers}
+                onUpdateProfile={async (updates) => {
+                  const updatedProfile = { ...profile, ...updates };
+                  setProfile(updatedProfile);
+                  await saveAndSync(updatedProfile, foodLogs, biomarkers, biomarkerHistory, actions, dailyBenefits, report, { type: 'profile' });
+                }}
+                onEditBiomarkerLog={handleEditBiomarkerLog}
+                onLogMedical={handleLogMedical}
+                onDeleteBiomarker={handleDeleteBiomarker}
+                onFlagNotUsed={handleFlagNotUsedGlobal}
+                onFlagNotUsedLocal={handleFlagNotUsedLocal}
+                onRestoreNotUsedLocal={handleRestoreNotUsedLocal}
+                onRestoreNotUsedGlobal={handleRestoreNotUsedGlobal}
+                onDeleteMultipleBiomarkers={handleDeleteMultipleBiomarkers}
+                onDeleteBiomarkerLog={handleDeleteBiomarkerLog}
+                onDeleteBiomarkerFromLog={handleDeleteBiomarkerFromLog}
+                onStandardizeUnits={handleStandardizeBiomarkerUnits}
+                onCombineBiomarkers={handleCombineBiomarkers}
+                onBatchCombineBiomarkers={handleBatchCombineBiomarkers}
+                onBatchConsolidate={handleBatchConsolidate}
+                onReviewWithAgent={(keys) => {
+                  const userIdentifier = profile?.email?.toLowerCase().replace(/[^a-z0-9]/g, '_') || 'guest';
+                  localStorage.setItem(`agent1_custom_batch_keys_${userIdentifier}`, JSON.stringify(keys));
+                  sessionStorage.setItem('auto_open_custom_batch_modal', 'true');
+                  setActiveTab('insights');
+                }}
+                onOpenAgentChat={(agentType, options) => {
+                  setActiveAgentType(agentType);
+                  setPrefillMessage(options?.prefillMessage || null);
+                  setActiveReviewBiomarkerKey(options?.biomarkerKey);
+                  if (options?.dataReviewBatchIdx !== undefined) setActiveDataReviewBatchIdx(options.dataReviewBatchIdx);
+                  if (options?.dataReviewBatchKeys) setActiveDataReviewBatchKeys(options.dataReviewBatchKeys);
+                  setIsMedicalChatOpen(true);
+                }}
+                onApplyCalculation={handleApplyCalculation}
+                selectedModelId={selectedModelId}
+                onChangeModelId={setSelectedModelId}
+                hasBmiAlert={profile ? hasBmiPendingAlert(profile, dismissedBmiAlerts, report) : false}
+                onDismissBmiAlert={handleDismissBmiAlert}
+                onAgentAnalysisSaved={handleAgentAnalysisSaved}
+                onDeleteAnalysis={handleDeleteAnalysis}
+              />
+            ) : (
+              <InsightsTab
+                profile={profile}
+                foodLogs={foodLogs}
+                biomarkers={biomarkers}
+                biomarkerHistory={biomarkerHistory}
+                onDataReviewStateChange={setDataReviewSharedState}
+                onDeleteBiomarker={handleDeleteBiomarker}
+                onFlagNotUsed={handleFlagNotUsedGlobal}
+                onRestoreNotUsedGlobal={handleRestoreNotUsedGlobal}
+                onDeleteMultipleBiomarkers={handleDeleteMultipleBiomarkers}
+                calibratingBatchIdx={calibratingBatchIdx}
+                calibratingAgentType={calibratingAgentType}
+                report={report}
+                draftReport={draftReport}
+                onAcceptReport={handleAcceptReport}
+                onRejectReport={handleRejectReport}
+                selectedModelId={selectedModelId}
+                onChangeModelId={setSelectedModelId}
+                onGenerateReport={handleGenerateReport}
+                isGenerating={isGenerating}
+                onNavigateToTab={setActiveTab as any}
+                onOpenMedicalChat={() => {
+                  setActiveAgentType(null);
+                  setPrefillMessage(null);
+                  setActiveReviewBiomarkerKey(undefined);
+                  setIsMedicalChatOpen(true);
+                }}
+                onUpdateProfile={async (updatedProfile) => {
+                  setProfile(updatedProfile);
+                  await saveAndSync(updatedProfile, foodLogs, biomarkers, biomarkerHistory, actions, dailyBenefits, report);
+                }}
+                onUpdateHistory={async (updatedHistory, newBiomarkers, updatedProfileArg) => {
+                  setBiomarkerHistory(updatedHistory);
+                  setBiomarkers(newBiomarkers);
+                  if (updatedProfileArg) setProfile(updatedProfileArg);
+                  await saveAndSync(updatedProfileArg || profile, foodLogs, newBiomarkers, updatedHistory, actions, dailyBenefits, report, { type: 'profile' });
+                }}
+                batchSize={batchSize}
+                onChangeBatchSize={(size) => {
+                  setBatchSize(size);
+                  try {
+                    localStorage.setItem('biomarker_batch_size', size.toString());
+                  } catch (e) {}
+                }}
+                onOpenAgentChat={(agentType: 'agent1' | 'agent2' | 'agent3' | 'agent4' | 'agent5' | 'health_baseline' | 'agent7' | 'data_review' | 'biomarker_review', options?: {
+                  biomarkerKey?: string; 
+                  prefillMessage?: string; 
+                  dataReviewBatchIdx?: number | string; 
+                  dataReviewBatchKeys?: string[];
+                  remainingText?: string;
+                  extractedData?: any[];
+                  currentBatch?: number;
+                  estimatedTotalMarkers?: number | null;
+                }) => {
+                  setActiveAgentType(agentType);
+                  setPrefillMessage(options?.prefillMessage || null);
+                  setActiveReviewBiomarkerKey(options?.biomarkerKey);
+                  setActiveDataReviewBatchIdx(options?.dataReviewBatchIdx !== undefined ? options.dataReviewBatchIdx : null);
+                  setActiveDataReviewBatchKeys(options?.dataReviewBatchKeys || []);
+                  setActiveDataReviewRemainingText(options?.remainingText || '');
+                  setActiveDataReviewExtractedYaml(options?.extractedData || []);
+                  setActiveDataReviewCurrentBatch(options?.currentBatch || 1);
+                  setActiveDataReviewEstimatedTotalMarkers(options?.estimatedTotalMarkers !== undefined ? options.estimatedTotalMarkers : null);
+                  setIsMedicalChatOpen(true);
+                }}
+                onDeleteAnalysis={handleDeleteAnalysis}
+                onArchiveAnalysis={async (id) => {
+                  if (profile.agentAnalyses) {
+                    const updatedProfile = {
+                      ...profile,
+                      agentAnalyses: profile.agentAnalyses.map(a => a.id === id ? { ...a, archived: true } : a)
+                    };
+                    setProfile(updatedProfile);
+                    await saveAndSync(updatedProfile, foodLogs, biomarkers, biomarkerHistory, actions, dailyBenefits, report, { type: 'analysis', targetId: id });
+                  }
+                }}
+                onAgentAnalysisSaved={handleAgentAnalysisSaved}
+                onOpenFrontDesk={() => setIsFrontDeskOpen(true)}
+              />
+            )}
+          </div>
         )}
         {activeTab === 'trends' && (
           <ErrorBoundary>
@@ -5691,7 +5730,7 @@ export default function App() {
         jobId={activeJobId}
         selectedModelId={selectedModelId}
         onChangeModelId={setSelectedModelId}
-        onJobEnqueued={(id, kind) => setActiveTab(kind === 'food' ? 'food' : 'medical')}
+        onJobEnqueued={(id, kind) => setActiveTab('food')}
         onClose={async () => {
           if (activeJobId) {
             const job = JobStore.getJob(activeJobId);
@@ -5700,6 +5739,7 @@ export default function App() {
             }
           }
           setActiveJobId(null);
+          setActiveTab('food');
         }}
         onLogFood={handleLogFood}
         biomarkers={biomarkers}
@@ -5727,13 +5767,18 @@ export default function App() {
         jobId={activeJobId}
         selectedModelId={selectedModelId}
         onChangeModelId={setSelectedModelId}
-        onJobEnqueued={(id, kind) => setActiveTab(kind === 'food' ? 'food' : 'medical')}
+        onJobEnqueued={(id, kind) => {
+          setActiveTab('health');
+          setHealthSubTab('biomarker');
+        }}
         onClose={() => {
           setIsMedicalChatOpen(false);
           setActiveAgentType(null);
           setPrefillMessage(null);
           setActiveDataReviewBatchIdx(null);
           setActiveJobId(null);
+          setActiveTab('health');
+          setHealthSubTab('biomarker');
         }}
         autoSendMessage={prefillMessage}
         onLogMedical={handleLogMedical}

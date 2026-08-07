@@ -1,10 +1,10 @@
 import React from 'react';
-import { Home, Lightbulb, Utensils, TrendingUp, Plus } from 'lucide-react';
+import { Home, Activity, Utensils, TrendingUp, Plus } from 'lucide-react';
 import { translations } from '../utils/translations';
 
 interface BottomNavProps {
-  activeTab: 'home' | 'insights' | 'food' | 'medical' | 'trends';
-  setActiveTab: (tab: 'home' | 'insights' | 'food' | 'medical' | 'trends') => void;
+  activeTab: 'home' | 'insights' | 'health' | 'food' | 'medical' | 'trends';
+  setActiveTab: (tab: 'home' | 'insights' | 'health' | 'food' | 'medical' | 'trends') => void;
   language: string;
   onPlusClick?: () => void;
   isFloatingOpen?: boolean;
@@ -15,7 +15,7 @@ export default function BottomNav({ activeTab, setActiveTab, language, onPlusCli
 
   const leftTabs = [
     { id: 'home', icon: Home, label: t.home },
-    { id: 'insights', icon: Lightbulb, label: t.insights },
+    { id: 'health', icon: Activity, label: t.health || 'Health' },
   ] as const;
 
   const rightTabs = [
@@ -30,7 +30,7 @@ export default function BottomNav({ activeTab, setActiveTab, language, onPlusCli
         <div className="flex items-center justify-around flex-1">
           {leftTabs.map((tab) => {
             const Icon = tab.icon;
-            const isActive = activeTab === tab.id;
+            const isActive = activeTab === tab.id || (tab.id === 'health' && (activeTab === 'insights' || activeTab === 'medical'));
             return (
               <button
                 key={tab.id}

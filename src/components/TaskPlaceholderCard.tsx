@@ -24,6 +24,95 @@ export default function TaskPlaceholderCard({
   profileLanguage = 'en'
 }: TaskPlaceholderCardProps) {
   const [imageUrl, setImageUrl] = useState<string | null>(null);
+  const [isSaving, setIsSaving] = useState(false);
+
+  const handleLocalSave = async () => {
+    if (!pendingFoodLog || isSaving) return;
+    setIsSaving(true);
+    
+    // Create a deep copy of pendingFoodLog to avoid mutating state directly
+    const logToSave = JSON.parse(JSON.stringify(pendingFoodLog));
+    
+    try {
+      let finalImageUrl = '';
+
+      // 1. Try fetching and converting raw images from ImageStore
+      const images = await ImageStore.getImages(job.id);
+      if (images && images.length > 0) {
+        const dataUrls = await Promise.all(
+          images.map(async (img) => {
+            if (typeof img === 'string') {
+              if (img.startsWith('data:image/') || img.startsWith('http')) {
+                return img;
+              }
+              if (img.startsWith('blob:')) {
+                try {
+                  const res = await fetch(img);
+                  const b = await res.blob();
+                  return new Promise<string>((resolve, reject) => {
+                    const reader = new FileReader();
+                    reader.onload = () => resolve(reader.result as string);
+                    reader.onerror = reject;
+                    reader.readAsDataURL(b);
+                  });
+                } catch {
+                  // Fall through
+                }
+              }
+              return img;
+            }
+            if (img && typeof img === 'object') {
+              const imgAny = img as any;
+              const blob = imgAny instanceof Blob ? imgAny : new Blob([imgAny], { type: imgAny.type || 'image/jpeg' });
+              return new Promise<string>((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = () => resolve(reader.result as string);
+                reader.onerror = reject;
+                reader.readAsDataURL(blob);
+              });
+            }
+            return '';
+          })
+        );
+        
+        const validUrls = dataUrls.filter(url => url && (url.startsWith('data:image/') || url.startsWith('http')));
+        if (validUrls.length > 0) {
+          finalImageUrl = validUrls[0];
+        }
+      }
+
+      // 2. FALLBACK: If ImageStore didn't yield a valid URL but we have an active, visible preview image in the state
+      if (!finalImageUrl && imageUrl) {
+        if (imageUrl.startsWith('data:image/') || imageUrl.startsWith('http')) {
+          finalImageUrl = imageUrl;
+        } else if (imageUrl.startsWith('blob:')) {
+          try {
+            const res = await fetch(imageUrl);
+            const b = await res.blob();
+            finalImageUrl = await new Promise<string>((resolve, reject) => {
+              const reader = new FileReader();
+              reader.onload = () => resolve(reader.result as string);
+              reader.onerror = reject;
+              reader.readAsDataURL(b);
+            });
+          } catch (e) {
+            console.warn('[TaskPlaceholderCard] Failed to convert active preview imageUrl state to base64:', e);
+          }
+        }
+      }
+
+      // Apply the resolved image URL if found
+      if (finalImageUrl) {
+        logToSave.imageUrl = finalImageUrl;
+        logToSave.imageUrls = [finalImageUrl];
+      }
+    } catch (e) {
+      console.warn('[TaskPlaceholderCard] Failed to convert ImageStore images to base64 for saving:', e);
+    } finally {
+      onSave(logToSave);
+      setIsSaving(false);
+    }
+  };
 
   // Load image preview: check ImageStore first for raw bytes, then fallback to photoUrl / pendingFoodLog / messages
   useEffect(() => {
@@ -256,11 +345,16 @@ export default function TaskPlaceholderCard({
                 </button>
                 {pendingFoodLog && (
                   <button
-                    onClick={() => onSave(pendingFoodLog)}
-                    className="px-3 py-1.5 text-xs font-bold bg-indigo-600 text-white hover:bg-indigo-700 rounded-xl shadow-sm hover:shadow transition-all flex items-center gap-1 cursor-pointer"
+                    onClick={handleLocalSave}
+                    disabled={isSaving}
+                    className="px-3 py-1.5 text-xs font-bold bg-indigo-600 text-white hover:bg-indigo-700 disabled:bg-indigo-400 rounded-xl shadow-sm hover:shadow transition-all flex items-center gap-1 cursor-pointer disabled:cursor-not-allowed"
                   >
-                    <Save className="w-3.5 h-3.5" />
-                    Save Log
+                    {isSaving ? (
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    ) : (
+                      <Save className="w-3.5 h-3.5" />
+                    )}
+                    {isSaving ? 'Saving...' : 'Save Log'}
                   </button>
                 )}
               </>

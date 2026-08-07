@@ -101,6 +101,16 @@ export default function MedicalHistoryTab({
     return () => { unsubscribe(); };
   }, []);
 
+  const activeMedicalJobs = useMemo(() => {
+    return jobs.filter(job => {
+      if (job.status === 'draft') return false;
+      const hasText = !!job.inputSnapshot?.text?.trim();
+      const hasPayload = hasText || !!(job.inputSnapshot as any)?.extractedData || !!(job.inputSnapshot as any)?.remainingText || !!(job.inputSnapshot as any)?.hasImage;
+      if (!hasPayload && job.status === 'queued') return false;
+      return true;
+    });
+  }, [jobs]);
+
   const activeHistory = useMemo(() => (biomarkerHistory || []).filter(h => h.sync_state !== 'delete'), [biomarkerHistory]);
   
   const getLatestValue = useCallback((key: string) => {
@@ -636,9 +646,9 @@ export default function MedicalHistoryTab({
       </div>
 
       {/* Active Medical Jobs */}
-      {jobs.length > 0 && (
+      {activeMedicalJobs.length > 0 && (
         <div className="space-y-3 mb-4" id="active-medical-jobs">
-          {jobs.map((job) => (
+          {activeMedicalJobs.map((job) => (
             <TaskPlaceholderCard
               key={job.id}
               job={job}

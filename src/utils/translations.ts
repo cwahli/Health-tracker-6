@@ -146,6 +146,7 @@ export const translations = {
     applyAgentFindings: "Apply & Save Agent Findings",
     viewAgentInstruction: "View Agent Instruction",
     home: 'Home',
+    health: 'Health',
     insights: 'Insights',
     foodHistory: 'Food History',
     medicalHistory: 'Medical History',
