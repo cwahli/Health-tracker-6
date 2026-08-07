@@ -1627,17 +1627,16 @@ app.post('/api/jobs/submit', async (req, res) => {
 app.get('/api/jobs/status', async (req, res) => {
   try {
     const { jobId, userId } = req.query;
-    if (!jobId && !userId) {
-      return res.status(400).json({ error: 'jobId or userId is required' });
+    if (!userId) {
+      return res.status(400).json({ error: 'userId parameter is required' });
     }
     const { isSupabaseConfigured } = await import('./src/utils/supabaseClient');
     if (!isSupabaseConfigured) {
       return res.json({ jobs: [] });
     }
     const { supabaseAdmin } = await import('./supabaseAdmin');
-    let query = supabaseAdmin.from('agent_jobs').select('*');
+    let query = supabaseAdmin.from('agent_jobs').select('*').eq('user_id', String(userId));
     if (jobId) query = query.eq('id', String(jobId));
-    if (userId) query = query.eq('user_id', String(userId));
     query = query.order('updated_at', { ascending: false }).limit(20);
     const { data, error } = await query;
     if (error) throw error;

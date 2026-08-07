@@ -366,15 +366,16 @@ export default function FoodHistoryTab({
 
     const jobItems = jobs
       .filter(job => {
-        // Exclude draft jobs or jobs without any text/image payload (prevents ghost "Processing..." cards)
+        // Exclude draft jobs
         if (job.status === 'draft') return false;
         const hasText = !!job.inputSnapshot?.text?.trim();
         const hasImages = !!(job.inputSnapshot as any)?.hasImage;
-        if (!hasText && !hasImages) return false;
+        const hasServerResult = !!(job.result?.pendingFoodLog || job.result?.data || job.result?.photoUrl);
+        const isActiveServerJob =
+          (job.kind === 'food_log' || job.kind === 'food_compare' || (job as any).kind === 'food') &&
+          ['queued', 'running', 'failed', 'succeeded'].includes(job.status);
 
-        // A job that's merely 'queued' has no progress, no scratchpad content, and no
-        // image to show yet — it renders as a bare "Processing..." card that looks broken.
-        // Wait until it's actually 'running' (or further along) before showing a card.
+        if (!hasText && !hasImages && !hasServerResult && !isActiveServerJob) return false;
 
         if (job.status !== 'succeeded') return true;
         const pendingFoodLog = job.messages?.find(m => m.pendingFoodLog)?.pendingFoodLog || job.result?.pendingFoodLog || job.result?.data;

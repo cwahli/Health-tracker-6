@@ -50,13 +50,13 @@ export function fetchJobsFromSupabase(userId?: string) {
 }
 
 export function initSupabaseJobSync(userId?: string): () => void {
+  // Always hydrate initial jobs from server API on mount
+  hydrateUserJobs(userId);
+
   if (!isSupabaseConfigured) {
     console.log('[SupabaseJobSync] Supabase not configured, realtime job sync disabled');
     return () => {};
   }
-
-  // Hydrate initial jobs from server on mount
-  hydrateUserJobs(userId);
 
   const channel = supabase.channel('public:agent_jobs')
     .on(
