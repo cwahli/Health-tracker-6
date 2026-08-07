@@ -1,0 +1,5 @@
+    const updatedProfile: UserProfile = {
+      ...profile,
+      customBiomarkers: updatedCustomBiomarkers,
+      deletedCustomBiomarkerKeys
+    };

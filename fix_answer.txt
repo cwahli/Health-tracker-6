@@ -1,0 +1,13 @@
+The "No match found across all 3 methods" message in the logs indicates that the DuckDuckGo search attempt was **blocked** by a bot challenge, not because there were actually no search results.
+
+Here is what is happening behind the scenes:
+1. The search utility in `server.ts` tries to scrape DuckDuckGo HTML and DuckDuckGo Lite pages for nutrition data.
+2. DuckDuckGo returns an HTTP status code `202 Accepted` and serves an `anomaly.js` botnet challenge page (a type of CAPTCHA) instead of the actual search results.
+3. Because HTTP 202 is technically considered an `ok` response by the `fetch` API, the code does not detect it as a failure (it only checks `if (!response.ok)`).
+4. The script then attempts to parse the bot challenge HTML using regex for search result snippets (`<a class="result__snippet">`). Since it's a bot challenge page, it finds zero snippets and incorrectly logs "No match found".
+
+The same happens for the official JSON API (which returns empty data for long-tail queries like these).
+
+If you are seeing this frequently, it means the server running the agent is being rate-limited or flagged as a bot by DuckDuckGo. This often happens in cloud environments (like Cloud Run or Replit). 
+
+You may want to consider implementing a retry mechanism with backoff, using a proxy service, or switching the search backend entirely to a dedicated API (like a Google Custom Search API or USDA FDC API) which won't serve bot challenges.

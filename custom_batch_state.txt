@@ -1,0 +1,9 @@
+  const [customDataReviewBatchKeys, setCustomDataReviewBatchKeys] = useState<string[]>(() => {
+    try {
+      const uId = profile?.email?.toLowerCase().replace(/[^a-z0-9]/g, '_') || 'guest';
+      const saved = localStorage.getItem(`datareview_custom_batch_keys_${uId}`);
+      return saved ? JSON.parse(saved) : [];
+    } catch(e) { return []; }
+  });
+  const [showCustomDataReviewBatchModal, setShowCustomDataReviewBatchModal] = useState(false);
+  const [customDataReviewBatchSearch, setCustomDataReviewBatchSearch] = useState('');

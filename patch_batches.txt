@@ -1,0 +1,1 @@
+                              {[...batches.map((keys, idx) => ({ keys, idx: idx as string | number, isCustom: false })), ...(customDataReviewBatchKeys.length > 0 ? [{ keys: customDataReviewBatchKeys, idx: 'custom', isCustom: true }] : [])].map(({ keys: batchKeys, idx: bIdx, isCustom }) => {

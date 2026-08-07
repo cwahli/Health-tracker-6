@@ -1,0 +1,24 @@
+[
+  {
+    "country_code": "GB",
+    "chain_key": "yolk",
+    "dish_name": "Bang-Bang Shroom (ve)",
+    "dish_name_key": "bang_bang_shroom",
+    "serving_grams": null,
+    "nutrients": {
+      "calories": 620,
+      "totalFat": 31.3,
+      "carbohydrates": 69.8,
+      "saturatedFat": 4.2,
+      "sugar": 9.9,
+      "protein": 18.6,
+      "totalFibre": 8.9,
+      "salt": 3.2,
+      "sodium": 1280
+    },
+    "source_url": null,
+    "notes": "Freshly-roasted mushrooms, almond bang-bang sauce, kimchi, coriander, sesame, fresh ciabatta",
+    "enabled": true,
+    "updated_at": "2026-07-31T22:00:00.000Z"
+  }
+]

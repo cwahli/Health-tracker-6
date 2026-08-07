@@ -1,0 +1,99 @@
+import { supabase, isSupabaseConfigured } from '../utils/supabaseClient';
+import { JobStore } from './JobStore';
+import { AgentJob } from './types';
+
+export function initSupabaseJobSync(userId?: string): () => void {
+  if (!isSupabaseConfigured) {
+    console.log('[SupabaseJobSync] Supabase not configured, realtime job sync disabled');
+    return () => {};
+  }
+
+  const channel = supabase.channel('public:agent_jobs')
+    .on(
+      'postgres_changes',
+      {
+        event: '*',
+        schema: 'public',
+        table: 'agent_jobs',
+        filter: userId ? `user_id=eq.${userId}` : undefined,
+      },
+      (payload) => {
+        const row = payload.new as any;
+        if (!row || !row.id) return;
+
+        const existingJob = JobStore.getJob(row.id);
+        const updatedFields: Partial<AgentJob> = {
+          status: row.status,
+          progressPercent: row.progress_percent,
+          statusMessage: row.status_message,
+        };
+
+        if (row.clean_result) {
+          updatedFields.result = {
+            ...(existingJob?.result || {}),
+            ...row.clean_result,
+            photoUrl: row.photo_url || row.clean_result.photoUrl,
+            debugUrl: row.debug_url || row.clean_result.debugUrl,
+          };
+        }
+
+        if (existingJob) {
+          JobStore.updateJob(row.id, updatedFields);
+        } else {
+          JobStore.createJob({
+            id: row.id,
+            kind: row.kind || 'food',
+            mode: row.mode || 'review',
+            status: row.status,
+            progressPercent: row.progress_percent || 0,
+            statusMessage: row.status_message || '',
+            messages: [],
+            result: row.clean_result || undefined,
+            createdAt: row.created_at ? new Date(row.created_at).getTime() : Date.now(),
+          } as any);
+        }
+      }
+    )
+    .subscribe();
+
+  return () => {
+    supabase.removeChannel(channel);
+  };
+}
+
+export async function upsertJobToSupabase(
+  job: AgentJob,
+  userId: string = 'anonymous',
+  photoUrl?: string,
+  debugUrl?: string,
+  cleanResult?: any
+): Promise<void> {
+  if (!isSupabaseConfigured) return;
+  try {
+    const payload = {
+      id: job.id,
+      user_id: userId,
+      kind: job.kind,
+      mode: job.mode || 'review',
+      status: job.status,
+      progress_percent: job.progressPercent || 0,
+      status_message: job.statusMessage || '',
+      photo_url: photoUrl || job.result?.photoUrl || null,
+      debug_url: debugUrl || job.result?.debugUrl || null,
+      clean_result: cleanResult || job.result || null,
+      updated_at: new Date().toISOString(),
+    };
+    
+    // Push through the server to avoid exposing anon keys / RLS issues directly from client for writes
+    const res = await fetch('/api/jobs/upsert', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ payload }),
+    });
+    if (!res.ok) {
+      throw new Error('Failed to upsert job via backend');
+    }
+  } catch (err) {
+    console.warn('[SupabaseJobSync] Failed to upsert job to backend/Supabase:', err);
+  }
+}

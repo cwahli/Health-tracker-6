@@ -1,0 +1,16 @@
+    });
+
+    // Fallback to flat dict if some keys exist only there
+    if (biomarkers) {
+      Object.keys(biomarkers).forEach(k => {
+        if (biomarkers[k] !== undefined && biomarkers[k] !== null && biomarkers[k] !== '') {
+          allKnownKeys.add(k);
+        }
+      });
+    }
+
+    return Array.from(allKnownKeys);
+  }, [activeHistory, biomarkers]);
+
+  const [biomarkerBatches, setBiomarkerBatches] = React.useState<string[][]>(() => {
+    try {

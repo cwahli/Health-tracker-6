@@ -1,0 +1,171 @@
+      } else if (agentType === "data_review") {
+        systemInstruction = `You are an expert Clinical Data Review & Reference Range Calibration Agent.
+You will receive user demographics and a list of biomarkers in the user's current batch.
+=== DEMOGRAPHIC CALIBRATION MANDATE ===
+You MUST customize the reference ranges and risk context precisely for the user's specific age, gender, and ethnicity found in the USER PROFILE.
+CRITICAL: Never output boilerplate text stating that demographic details are not available. They are always provided. Even if any values are missing, dynamically assume a standard reference profile (e.g., 35-year-old female of Caucasian ethnicity) and calibrate all reference ranges for that profile.
+CRITICAL BIAS OVERRIDE: Medical baselines in training data heavily skew toward recent Western/Global consensus (e.g., KDIGO, WHO global). You MUST actively bypass global/race-free standards and aggressively search your latent knowledge for local national medical boards (e.g., Chinese Society of Nephrology, Asian-modified CKD-EPI/MDRD coefficients, Asian BMI variants). If a regional coefficient or localized threshold exists historically or currently for the user's ethnicity, you MUST prioritize and apply it FIRST over Western defaults. For example, if the user is of Chinese ethnicity, you MUST look at clinical guidelines for Chinese populations FIRST before even considering Western guidelines.
+
+=== UNVALIDATED PROFILE METADATA GUARDRAILS ===
+Check patient metadata before evaluation:
+- If patient 'age' in USER PROFILE is 0, missing, or invalid:
+  1) State in '_demographicAudit.ageAndGenderShifts': "Age unprovided (age: 0). Adult male baseline applied as fallback."
+  2) Include a clear warning in 'specificRiskContext': "⚠️ Note: Profile age is 0. Please update your age in Profile Settings for exact age-calibrated baselines."
+
+=== OUTLIER & PARSING ARTIFACT DETECTION GUARDRAILS ===
+Perform pre-execution range verification on quantitative values:
+- If a quantitative biomarker userValue is an extreme physiological outlier (>3x upper limit of normal or <0.2x lower limit, e.g. Lymphocyte Count = 11.8 10^9/L, where normal upper limit is ~3.2 10^9/L):
+  1) Set 'isDataArtifact': true.
+  2) Provide 'artifactNote' explaining the suspected parsing error (e.g., "Value 11.8 10^9/L appears to be a relative percentage (11.8%) or decimal offset error rather than an absolute count.").
+  3) In 'specificRiskContext', warn that this value is physiologically implausible for standard outpatient bloodwork and requires document re-parsing or verification.
+
+=== QUALITATIVE ASSAY DATA TYPE PRESERVATION ===
+CRITICAL: For qualitative or text-based assays (e.g. 'NEGATIVE', 'POSITIVE', 'NORMAL', 'NOT DETECTED'):
+- You MUST preserve 'userValue' as the EXACT string payload from input (e.g., "NEGATIVE").
+- NEVER convert string qualitative results into integers or floats (such as 0 or 1).
+
+=== CLINICAL SYMPTOM & DISEASE SEVERITY INDEX EVALUATION MANDATE ===
+For any clinical symptom score or disease severity index biomarker (e.g. unit is 'score' or 'points', or key ends in '_symptom_score' or '_score' or '_index', such as 'hemorrhoidal_symptom_score', 'Hemorrhoidal Disease Symptom Score (HDSS)', 'gerd_symptom_score', 'joint_pain_severity_score'):
+1. Recognise that disease/symptom severity scores have a globally uniform baseline of 0 (Remission / Healthy / Asymptomatic) across all global demographics, ages, genders, and ethnicities.
+2. In '_demographicAudit':
+   - 'standardWesternBaseline': 'A score of 0 indicates complete clinical remission.'
+   - 'knownEthnicOrRegionalVariances': 'None. Symptom index thresholds are globally uniform.'
+   - 'ageAndGenderShifts': 'Baselines remain 0 regardless of profile age or gender.'
+   - 'finalAppliedAdjustments': 'Standard index evaluation applied.'
+3. Set 'profileAdjustedNormalRange' to '0' and 'optimalValue' to '0'.
+4. In 'rangeBrackets', use standardized clinical index severity brackets:
+   - [ { "name": "Remission / Healthy", "range": "0" }, { "name": "Mild Flare-up", "range": "1" }, { "name": "Moderate Flare-up", "range": "2" }, { "name": "Severe Progression", "range": ">= 3" } ]
+5. Evaluation & Status:
+   - '_statusReasoning': "User score of <X> is outside the optimal baseline of 0." (if userValue > 0) or "User score of 0 matches optimal baseline of 0."
+   - 'status': 'At Risk' if userValue > 0 or != '0'; 'Healthy' if userValue == 0 or '0'.
+   - 'specificRiskContext': Provide concise clinical guidance for mitigating flare-ups (e.g. for HDSS score 2: "Active moderate flare-up detected. Focus on mitigating local regular pressure: increase dietary fiber, ensure target hydration, and avoid prolonged sitting.").
+
+=== CRITICAL BREVITY DIRECTIVE (PREVENT TIMEOUTS & TRUNCATION) ===
+Your responses MUST be extremely concise to fit within token limits:
+- Keep '_demographicAudit.standardWesternBaseline' to 8 words maximum.
+- Keep '_demographicAudit.knownEthnicOrRegionalVariances' to 8 words maximum.
+- Keep '_demographicAudit.ageAndGenderShifts' to 8 words maximum.
+- Keep '_demographicAudit.finalAppliedAdjustments' to 8 words maximum.
+- Keep 'description' to exactly 1 short sentence of 10 words.
+- Keep '_statusReasoning' to 5-8 words maximum.
+- Keep 'specificRiskContext' to 1-2 short sentences (20 words maximum).
+- Under 'rangeBrackets', define only necessary brackets (e.g. Optimal, Elevated, Low).
+=== OPTIMAL VALUE vs NORMAL RANGE MANDATE ===
+- 'profileAdjustedNormalRange': The healthy reference range bounds where the biomarker is not at risk (e.g. '18.5 - 22.9 kg/m2').
+- 'optimalValue': The SPECIFIC SINGLE IDEAL TARGET VALUE for this specific user profile to aim for (e.g., '21.0 kg/m2' for BMI, '30 mmol/mol' for HbA1c, '115 mmHg' for SBP, '1.2 mmol/L' for ApoB). This MUST be a specific single ideal target value/point within the healthy spectrum calculated for this patient's age/gender/profile, NOT a range string and NOT a repeat of normalRange. The patient should aim for an ideal target point, not just stay barely below the at-risk cutoff.
+
+=== TASK: PERSONALISED HEALTH RISK ESTIMATION ===
+For each biomarker, follow a strict logical funnel to determine the correct ranges and status:
+"_demographicAudit": A mandatory internal reasoning object where you actively contrast Western global standards with regional/ethnic guidelines.
+"profileAdjustedNormalRange": The final calibrated range based on your audit for which the biomarker is not at risk.
+"optimalValue": A single specific ideal target value (e.g. '21.0 kg/m2' for BMI) that this user profile should aim for within the healthy spectrum.
+"rangeBrackets": List each range bracket with its naming and value ranges, adjusted to match your demographic audit. CRITICAL: The brackets MUST be continuous (no numerical gaps or missing values between brackets) and must fully map out the bounds of the profileAdjustedNormalRange. Include bounds for each bracket.
+"description": A clear, ultra-short description of the physiological role.
+"_statusReasoning": A strict mathematical comparison of the userValue against the profileAdjustedNormalRange.
+"status": Assign 'Healthy' or 'At Risk'. MATHEMATICAL BINDING RULE: If userValue is strictly within the profileAdjustedNormalRange, output 'Healthy'. If outside (even slightly), output 'At Risk'. Do not use clinical leniency.
+"specificRiskContext": If 'At Risk', explain why this value matters for this demographic or provide reassurance if only mildly out of range. If 'Healthy', describe why this signifies optimal homeostasis.
+=== CRITICAL REQUIREMENTS ===
+You MUST include an analysis for EVERY biomarker in the input list.
+Your output MUST be a valid JSON object matching the schema provided.`;
+        mockData = { message: "Completed clinical review.", reviewedBiomarkers: [] };
+      }
+
+      let textOutput = "";
+      if (process.env.GEMINI_API_KEY === undefined) {
+        textOutput = JSON.stringify(mockData);
+      } else {
+        let historyText = "";
+        if (history && history.length > 0) {
+          historyText = "Chat History:\n" + history.map((h: any) => `${h.role}: ${h.content}`).join("\n") + "\n\n";
+        }
+        
+        let imagePayload = null;
+        let imagesPayload: { mimeType: string, data: string }[] | undefined = undefined;
+        if (images && images.length > 0) {
+          imagesPayload = images.map((img: string) => {
+            const mimeType = img.split(";")[0].split(":")[1] || "image/jpeg";
+            const base64Data = img.split(",")[1];
+            return { mimeType, data: base64Data };
+          });
+          imagePayload = imagesPayload[0];
+        } else if (image) {
+          const mimeType = image.split(";")[0].split(":")[1] || "image/jpeg";
+          const base64Data = image.split(",")[1];
+          imagePayload = { mimeType, data: base64Data };
+        }
+        const imageCtx = imageDates && imageDates.length > 0 ? `The attached images were taken on these dates: ${imageDates.join(", ")}.` : "";
+        
+        const cleanProfile: any = {
+          age: userProfile?.age,
+          gender: userProfile?.gender,
+          ethnicity: userProfile?.ethnicity,
+          bloodType: userProfile?.bloodType,
+          weight: userProfile?.weight,
+          height: userProfile?.height
+        };
+        
+        // Strip undefined and null values
+        Object.keys(cleanProfile).forEach(key => {
+          if (cleanProfile[key] === undefined || cleanProfile[key] === null) {
+            delete cleanProfile[key];
+          }
+        });
+
+        const slimBiomarkers: any = {};
+        if (userProfile?.customBiomarkers) {
+          Object.keys(userProfile.customBiomarkers).forEach((k: string) => {
+            slimBiomarkers[k] = { 
+              name: userProfile.customBiomarkers[k].name, 
+              unit: userProfile.customBiomarkers[k].unit 
+            };
+          });
+        }
+        
+        const cleanedPayload: any = {
+          userProfile: cleanProfile,
+          biomarkerDefinitions: slimBiomarkers,
+          biomarkerHistory: biomarkerHistory || []
+        };
+        if (agentType === "agent4") {
+          delete cleanedPayload.biomarkerDefinitions;
+        }
+
+        let jsonStr = "";
+        if (req.body.extractedData) {
+          if (typeof req.body.extractedData === 'string') {
+            jsonStr = req.body.extractedData;
+          } else {
+            jsonStr = JSON.stringify(req.body.extractedData, null, 2);
+          }
+        }
+
+        let dataContext = "";
+        if (agentType === "agent1_step1") {
+          const prevJson = jsonStr ? `\n\nPREVIOUSLY EXTRACTED JSON:\n${jsonStr}` : "";
+          const remText = req.body.remainingText ? `\n\nREMAINING UNPARSED TEXT:\n${req.body.remainingText}` : "";
+          const prevTotal = req.body.estimatedTotalMarkers ? `\n\nPREVIOUSLY ESTIMATED TOTAL MARKERS:\n${req.body.estimatedTotalMarkers}` : "";
+          const baseData = customVariableData ? `\n\n${customVariableData}\n` : `\n\nUSER PROFILE:\n${JSON.stringify(cleanProfile, null, 2)}\n`;
+          const reportSource = req.body.originalReportText || message;
+          const step1Timezone = req.body.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone;
+          let step1LocalDateStr;
+          try {
+            const step1Formatter = new Intl.DateTimeFormat('en-CA', { timeZone: step1Timezone, year: 'numeric', month: '2-digit', day: '2-digit' });
+            step1LocalDateStr = step1Formatter.format(new Date());
+          } catch (e) {
+            step1LocalDateStr = new Date().toISOString().split("T")[0];
+          }
+          const dateCtx = `\n\nCURRENT DATE (user local, YYYY-MM-DD): ${step1LocalDateStr}\nUse this as the anchor for resolving relative date references in patient-reported text (e.g. "today", "yesterday", "the last 2 days").\n`;
+          dataContext = `\n\nUSER RAW DATA:\n${reportSource}${prevJson}${remText}${prevTotal}${dateCtx}${baseData}`;
+        } else if (agentType === "agent1_step2") {
+          const baseData = customVariableData ? `\n\n${customVariableData}\n` : "";
+          dataContext = `${baseData}\n\nEXTRACTED JSON DATA:\n${jsonStr}\n`;
+        } else if (agentType === "agent1_step3") {
+          const baseData = customVariableData ? `\n\n${customVariableData}\n` : "";
+          dataContext = `${baseData}\n\nEXTRACTED JSON DATA:\n${jsonStr}\n\nBUCKET MAPPING JSON:\n${req.body.bucketMapping}\n`;
+        } else if (agentType === "data_review") {
+          const batchData = req.body.batchBiomarkers || [];
+          const baseData = customVariableData ? `\n\n${customVariableData}\n` : `\n\nUSER PROFILE:\n${JSON.stringify(cleanProfile, null, 2)}\n`;
+          dataContext = `${baseData}\n\nBIOMARKERS BATCH FOR REVIEW:\n${JSON.stringify(batchData, null, 2)}\n`;
+        } else if (agentType === "agent1") {
+          const batchData = req.body.batchBiomarkers || [];
+          const baseData = customVariableData ? `\n\n${customVariableData}\n` : `\n\nUSER PROFILE:\n${JSON.stringify(cleanProfile, null, 2)}\n`;

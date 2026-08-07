@@ -1,0 +1,251 @@
+2019:app.post("/api/gemini/food-analyze", async (req, res) => {
+2020-  const isStream = req.query.stream === 'true';
+2021-  let hasSentHeaders = false;
+2022-
+2023-  if (isStream) {
+2024-    res.setHeader('Content-Type', 'text/event-stream');
+2025-    res.setHeader('Cache-Control', 'no-cache, no-transform');
+2026-    res.setHeader('Connection', 'keep-alive');
+2027-    res.setHeader('X-Accel-Buffering', 'no');
+2028-    res.setHeader('X-Content-Type-Options', 'nosniff');
+2029-    res.flushHeaders();
+2030-    hasSentHeaders = true;
+2031-
+2032-    const originalJson = res.json.bind(res);
+2033-    const originalStatus = res.status.bind(res);
+2034-
+2035-    res.status = (code: number) => {
+2036-      // If headers already sent, ignore status code changes
+2037-      if (!res.headersSent) {
+2038-        originalStatus(code);
+2039-      }
+2040-      return res;
+2041-    };
+2042-
+2043-    res.json = (body: any) => {
+2044-      const sessionId = logSessionStorage.getStore() || "global";
+2045-      const logsToUse = sessionDebugLogs[sessionId] || globalDebugLogs;
+2046-      body.agentResult = body.agentResult || {};
+2047-      body.agentResult.backendLogs = logsToUse.slice(-150).map((l: any) => `[${l.timestamp}] ${l.message}`).join('\n');
+2048-      res.write(`data: ${JSON.stringify({ final: true, result: body })}\n\n`);
+2049-      res.end();
+2050-      return res;
+2051-    };
+2052-  }
+2053-
+2054-  const sendStreamEvent = (data: any) => {
+2055-    if (isStream && hasSentHeaders) {
+2056-      try {
+2057-        res.write(`data: ${JSON.stringify(data)}\n\n`);
+2058-        if (typeof (res as any).flush === 'function') (res as any).flush();
+2059-      } catch (e) {}
+2060-    }
+2061-  };
+2062-
+2063-  await streamDebugLogStorage.run((_msg: string) => {
+2064-    // sendLog() below already broadcasts its own tagged event directly — every message
+2065-    // it passes to addDebugLog() is prefixed "[<logType>] ...", so skip re-forwarding
+2066-    // those here to avoid sending the same line twice under two different tags.
+2067-    if (/^\[(status|scout_instruction|scout_answer|db_search|db_search_complete|dietitian_instruction|dietitian_answer)\]/.test(_msg)) {
+2068-      return;
+2069-    }
+2070-    sendStreamEvent({ type: 'log', logType: 'backend', stage: 'backend', message: _msg });
+2071-  }, async () => {
+2072-  try {
+2073-    const { message, image, images, imageDates, history, userProfile, engine, biomarkersNeedingImprovement, remainingAllowance, userId, activeMeal, customSystemInstruction, customVariableData, foodLogs, userSelectedMode } = req.body;
+2074-
+2075-    const sendLog = (logType: string, stage: 'scout' | 'db_search' | 'dietitian', messageText: string, extra?: any) => {
+2076-      addDebugLog(`[${logType}] ${messageText}`);
+2077-      sendStreamEvent({ type: 'log', logType, stage, message: messageText, timestamp: Date.now(), ...extra });
+2078-    };
+2079-    sendLog('status', 'scout', 'Starting food analysis...');
+2080-
+2081-    const STANDARD_FOOD_FACTORS: {[key: string]: {calories: number, saturatedFat: number, sodium: number, protein: number, carbohydrates: number, totalFat: number}} = {
+2082-      steak: { calories: 2.5, saturatedFat: 0.05, sodium: 1.8, protein: 0.26, carbohydrates: 0.0, totalFat: 0.18 },
+2083-      beef: { calories: 2.5, saturatedFat: 0.05, sodium: 1.8, protein: 0.26, carbohydrates: 0.0, totalFat: 0.18 },
+2084-      chicken: { calories: 1.65, saturatedFat: 0.01, sodium: 0.7, protein: 0.31, carbohydrates: 0.0, totalFat: 0.036 },
+2085-      breast: { calories: 1.65, saturatedFat: 0.01, sodium: 0.7, protein: 0.31, carbohydrates: 0.0, totalFat: 0.036 },
+2086-      pork: { calories: 2.4, saturatedFat: 0.03, sodium: 0.8, protein: 0.27, carbohydrates: 0.0, totalFat: 0.14 },
+2087-      fish: { calories: 1.5, saturatedFat: 0.01, sodium: 0.8, protein: 0.20, carbohydrates: 0.0, totalFat: 0.06 },
+2088-      salmon: { calories: 2.0, saturatedFat: 0.015, sodium: 0.5, protein: 0.20, carbohydrates: 0.0, totalFat: 0.13 },
+2089-      rice: { calories: 1.3, saturatedFat: 0.0, sodium: 0.01, protein: 0.027, carbohydrates: 0.28, totalFat: 0.003 },
+2090-      broccoli: { calories: 0.35, saturatedFat: 0.0, sodium: 0.3, protein: 0.028, carbohydrates: 0.07, totalFat: 0.004 },
+2091-      egg: { calories: 1.5, saturatedFat: 0.03, sodium: 1.4, protein: 0.13, carbohydrates: 0.011, totalFat: 0.11 },
+2092-      avocado: { calories: 1.6, saturatedFat: 0.02, sodium: 0.07, protein: 0.02, carbohydrates: 0.085, totalFat: 0.147 },
+2093-      bread: { calories: 2.6, saturatedFat: 0.005, sodium: 4.8, protein: 0.09, carbohydrates: 0.49, totalFat: 0.032 },
+2094-      butter: { calories: 7.1, saturatedFat: 5.1, sodium: 5.7, protein: 0.009, carbohydrates: 0.001, totalFat: 0.81 },
+2095-      cheese: { calories: 4.0, saturatedFat: 1.8, sodium: 6.2, protein: 0.25, carbohydrates: 0.013, totalFat: 0.33 },
+2096-      salad: { calories: 0.2, saturatedFat: 0.0, sodium: 0.1, protein: 0.01, carbohydrates: 0.03, totalFat: 0.002 },
+2097-      tomato: { calories: 0.18, saturatedFat: 0.0, sodium: 0.05, protein: 0.009, carbohydrates: 0.039, totalFat: 0.002 },
+2098-      oil: { calories: 8.8, saturatedFat: 1.4, sodium: 0.0, protein: 0.0, carbohydrates: 0.0, totalFat: 1.0 },
+2099-      potato: { calories: 0.8, saturatedFat: 0.0, sodium: 0.05, protein: 0.02, carbohydrates: 0.17, totalFat: 0.001 },
+2100-      pasta: { calories: 1.3, saturatedFat: 0.0, sodium: 0.01, protein: 0.05, carbohydrates: 0.25, totalFat: 0.011 }
+2101-    };
+2102-
+2103-    // 1. Intercept prompt & read current active state from Request Body (passed from client)
+2104-    if (activeMeal) {
+2105-      addDebugLog(`[Client State] Received active meal: ${activeMeal.name}`);
+2106-    } else {
+2107-      addDebugLog(`[Client State] No active meal received.`);
+2108-    }
+2109-
+2110-    // Check if key is mock
+2111-    if (process.env.GEMINI_API_KEY === undefined) {
+2112-      // If the user's message is a modify request, let's execute modify command offline!
+2113-      const isModifyRequest = message.toLowerCase().includes("change") || message.toLowerCase().includes("modify") || message.toLowerCase().includes("update") || message.toLowerCase().includes("remove") || message.toLowerCase().includes("add") || message.toLowerCase().includes("gram");
+2114-      
+2115-      if (isModifyRequest && activeMeal) {
+2116-        // Let's create an offline mock command
+2117-        let mockCommand: any = null;
+2118-        if (message.toLowerCase().includes("steak")) {
+2119-          const match = message.match(/(\d+)\s*g/);
+2120-          const grams = match ? Number(match[1]) : 100;
+2121-          mockCommand = { action: "update_weight", itemName: "Beef Steak", newWeightGrams: grams };
+2122-        } else if (message.toLowerCase().includes("remove")) {
+2123-          mockCommand = { action: "remove_item", itemName: "Beef Steak" };
+2124-        } else {
+2125-          const match = message.match(/(\d+)\s*g/);
+2126-          const grams = match ? Number(match[1]) : 120;
+2127-          mockCommand = { action: "add_item", itemName: "Extra Topping", newWeightGrams: grams };
+2128-        }
+2129-
+2130-        const originalTotalWeight = (activeMeal.itemsBreakdown || []).reduce((acc: number, it: any) => acc + (Number(it.weightGrams) || 0), 0) || 1;
+2131-        
+2132-        if (mockCommand) {
+2133-          if (mockCommand.action === "update_weight") {
+2134-            const item = activeMeal.itemsBreakdown?.find((it: any) => it.name.toLowerCase().includes(mockCommand.itemName.toLowerCase()));
+2135-            if (item) {
+2136-              const oldWeight = Number(item.weightGrams) || 1;
+2137-              const R = mockCommand.newWeightGrams / oldWeight;
+2138-              item.weightGrams = Number(mockCommand.newWeightGrams);
+2139-              item.calories = Number((item.calories * R).toFixed(1));
+2140-              item.saturatedFat = Number((item.saturatedFat * R).toFixed(2));
+2141-              item.sodium = Number((item.sodium * R).toFixed(1));
+2142-            }
+2143-          } else if (mockCommand.action === "remove_item") {
+2144-            const idx = activeMeal.itemsBreakdown?.findIndex((it: any) => it.name.toLowerCase().includes(mockCommand.itemName.toLowerCase()));
+2145-            if (idx !== -1) {
+2146-              activeMeal.itemsBreakdown.splice(idx, 1);
+2147-            }
+2148-          } else if (mockCommand.action === "add_item") {
+2149-            if (!activeMeal.itemsBreakdown) activeMeal.itemsBreakdown = [];
+2150-            activeMeal.itemsBreakdown.push({
+2151-              name: mockCommand.itemName,
+2152-              weightGrams: mockCommand.newWeightGrams,
+2153-              calories: mockCommand.newWeightGrams * 1.5,
+2154-              saturatedFat: mockCommand.newWeightGrams * 0.02,
+2155-              sodium: mockCommand.newWeightGrams * 0.5
+2156-            });
+2157-          }
+2158-        }
+2159-
+2160-        const newTotalWeight = (activeMeal.itemsBreakdown || []).reduce((acc: number, it: any) => acc + (Number(it.weightGrams) || 0), 0);
+2161-        const mealWeightRatio = newTotalWeight / originalTotalWeight;
+2162-
+2163-        activeMeal.weightGrams = newTotalWeight;
+2164-        activeMeal.composition = (activeMeal.itemsBreakdown || []).map((it: any) => it.name).join(", ");
+2165-        
+2166-        const newCalories = (activeMeal.itemsBreakdown || []).reduce((acc: number, it: any) => acc + (Number(it.calories) || 0), 0);
+2167-        const newSaturatedFat = (activeMeal.itemsBreakdown || []).reduce((acc: number, it: any) => acc + (Number(it.saturatedFat) || 0), 0);
+2168-        const newSodium = (activeMeal.itemsBreakdown || []).reduce((acc: number, it: any) => acc + (Number(it.sodium) || 0), 0);
+2169-
+2170-        activeMeal.nutrients.calories = Number(newCalories.toFixed(1));
+2171-        activeMeal.nutrients.saturatedFat = Number(newSaturatedFat.toFixed(2));
+2172-        activeMeal.nutrients.sodium = Number(newSodium.toFixed(1));
+2173-
+2174-        for (const key of Object.keys(activeMeal.nutrients)) {
+2175-          if (key !== "calories" && key !== "saturatedFat" && key !== "sodium") {
+2176-            activeMeal.nutrients[key] = Number((activeMeal.nutrients[key] * mealWeightRatio).toFixed(2));
+2177-          }
+2178-        }
+2179-
+2180-        // We removed offline mock write to user_meals to avoid permission issues
+2181-
+2182-        return res.json({
+2183-          text: `[Simulated Offline Mod] Modifying active meal: **${activeMeal.name}** to new weights/items. Recalculated all 30 sub-nutrients mathematically offline to save tokens and ensure precision.`,
+2184-          data: activeMeal
+2185-        });
+2186-      }
+2187-
+2188-      const isDiscussionRequest = message.toLowerCase().includes("why") || message.toLowerCase().includes("explain") || message.toLowerCase().includes("question");
+2189-      if (isDiscussionRequest) {
+2190-        return res.json({
+2191-          text: "This is a simulated conversational answer about your active meal ingredients, explaining that avocado and salmon are rich sources of dietary fibre and heart-healthy monounsaturated fatty acids.",
+2192-          data: null
+2193-        });
+2194-      }
+2195-
+2196-      return res.json({
+2197-        error: "The food log agent is not available. Please enter the food details manually.",
+2198-        agentNotAvailable: true
+2199-      });
+2200-    }
+2201-
+2202-    let imagePayloads = null;
+2203-    if (images && Array.isArray(images) && images.length > 0) {
+2204-      imagePayloads = images.map((imgStr: string) => {
+2205-        const mimeType = imgStr.split(";")[0].split(":")[1] || "image/jpeg";
+2206-        const base64Data = imgStr.split(",")[1];
+2207-        return { mimeType, data: base64Data };
+2208-      });
+2209-    } else if (image) {
+2210-      const mimeType = image.split(";")[0].split(":")[1] || "image/jpeg";
+2211-      const base64Data = image.split(",")[1];
+2212-      imagePayloads = [{ mimeType, data: base64Data }];
+2213-    }
+2214-
+2215-    addDebugLog(`[Image Payload] Received ${imagePayloads ? imagePayloads.length : 0} image(s). Approx sizes (KB): ${imagePayloads ? imagePayloads.map(p => Math.round((p.data.length * 0.75) / 1024) + 'KB').join(', ') : 'none'}.`);
+2216-
+2217-    const analysisNutrientKeys = [
+2218-        "calories", "protein", "totalFat", "saturatedFat", "transFat", "unsaturatedFat", "omega3", 
+2219-      "carbohydrates", "addedSugar", "totalFibre", "solubleFibre", "sodium", "potassium", 
+2220-      "magnesium", "calcium", "iron", "zinc", "selenium", "iodine", "phosphorus", 
+2221-      "vitaminD", "vitaminB12", "folate", "vitaminC", "vitaminE", "vitaminK", 
+2222-      "vitaminA", "vitaminB6", "thiamine", "riboflavin", "niacin"
+2223-    ];
+2224-
+2225-    // Helper functions for nutritional data lookup
+2226-    const formatUSDANutrients = (nutrients: any[]): string => {
+2227-      if (!nutrients || !Array.isArray(nutrients)) return "No nutrients available";
+2228-      const findNutrient = (namePatterns: string[]) => {
+2229-        // Stricter exact word match first
+2230-        const exactMatch = nutrients.find(n => {
+2231-          const name = (n.nutrientName || (n.nutrient && n.nutrient.name) || "").toLowerCase().trim();
+2232-          return namePatterns.some(p => name === p.toLowerCase().trim());
+2233-        });
+2234-        if (exactMatch) {
+2235-          const val = getUSDANutrientValue(exactMatch);
+2236-          const unit = exactMatch.unitName || (exactMatch.nutrient && exactMatch.nutrient.unitName) || "";
+2237-          return `${val}${unit}`;
+2238-        }
+2239-
+2240-        // Fallback with precise keyword validation to avoid false fatty acid matches on "fat"
+2241-        const nut = nutrients.find(n => {
+2242-          const name = (n.nutrientName || (n.nutrient && n.nutrient.name) || "").toLowerCase();
+2243-          return namePatterns.some(p => {
+2244-            const cleanP = p.toLowerCase().trim();
+2245-            if (cleanP === "fat" && name.includes("fatty")) {
+2246-              return false; // prevent totalFat matching on saturated fat
+2247-            }
+2248-            return name.includes(cleanP);
+2249-          });
+2250-        });
+2251-        if (!nut) return null;
+2252-        const val = getUSDANutrientValue(nut);
+2253-        const unit = nut.unitName || (nut.nutrient && nut.nutrient.unitName) || "";
+2254-        return `${val}${unit}`;
+2255-      };
+2256-      const mapped: string[] = [];
+2257-      const kcal = findNutrient(["energy", "calories"]);
+2258-      const protein = findNutrient(["protein"]);
+2259-      const fat = findNutrient(["total lipid", "fat"]);
+2260-      const satFat = findNutrient(["saturated fat", "fatty acids, total saturated"]);
+2261-      const sodium = findNutrient(["sodium"]);
+2262-      if (kcal) mapped.push(`Calories: ${kcal}`);
+2263-      if (protein) mapped.push(`Protein: ${protein}`);
+2264-      if (fat) mapped.push(`Fat: ${fat}`);
+2265-      if (satFat) mapped.push(`SatFat: ${satFat}`);
+2266-      if (sodium) mapped.push(`Sodium: ${sodium}`);
+2267-      return mapped.join(", ");
+2268-    };
+2269-

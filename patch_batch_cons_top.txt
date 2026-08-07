@@ -1,0 +1,4 @@
+  const handleBatchConsolidate = async (mapping: { [key: string]: string }) => {
+    const targetGroups: { [targetKey: string]: string[] } = {};
+    const updatedCustomBiomarkers = { ...(profile?.customBiomarkers || {}) };
+    const deletedCustomBiomarkerKeys = { ...(profile?.deletedCustomBiomarkerKeys || {}) };
