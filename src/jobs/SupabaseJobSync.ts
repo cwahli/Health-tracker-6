@@ -2,11 +2,58 @@ import { supabase, isSupabaseConfigured } from '../utils/supabaseClient';
 import { JobStore } from './JobStore';
 import { AgentJob } from './types';
 
+export async function hydrateUserJobs(userId: string = 'anonymous'): Promise<void> {
+  if (!isSupabaseConfigured) return;
+  try {
+    const { data: rows, error } = await supabase
+      .from('agent_jobs')
+      .select('*')
+      .eq('user_id', userId)
+      .order('updated_at', { ascending: false })
+      .limit(20);
+
+    if (error || !rows) return;
+
+    for (const row of rows) {
+      const existing = JobStore.getJob(row.id);
+      if (!existing) {
+        JobStore.createJob({
+          id: row.id,
+          kind: row.kind || 'food',
+          mode: row.mode || 'review',
+          status: row.status,
+          progressPercent: row.progress_percent || 0,
+          statusMessage: row.status_message || '',
+          messages: [],
+          result: row.clean_result || undefined,
+          createdAt: row.created_at ? new Date(row.created_at).getTime() : Date.now(),
+        } as any);
+      } else {
+        JobStore.updateJob(row.id, {
+          status: row.status,
+          progressPercent: row.progress_percent,
+          statusMessage: row.status_message,
+          result: row.clean_result || existing.result
+        });
+      }
+    }
+  } catch (e) {
+    console.warn('[SupabaseJobSync] Error hydrating user jobs:', e);
+  }
+}
+
+export function fetchJobsFromSupabase(userId?: string) {
+  return hydrateUserJobs(userId);
+}
+
 export function initSupabaseJobSync(userId?: string): () => void {
   if (!isSupabaseConfigured) {
     console.log('[SupabaseJobSync] Supabase not configured, realtime job sync disabled');
     return () => {};
   }
+
+  // Hydrate initial jobs from server on mount
+  hydrateUserJobs(userId);
 
   const channel = supabase.channel('public:agent_jobs')
     .on(

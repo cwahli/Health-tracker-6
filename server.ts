@@ -17,6 +17,7 @@ import * as cheerio from "cheerio";
 import fs from "fs";
 import path from "path";
 import { getApps, initializeApp } from 'firebase-admin/app';
+import { submitServerJob } from './serverJobs';
 
 export const BEVERAGE_RAW_PATTERN = /\b(beverage|drink|water|juice|beer|wine|soda|cola|tea|coffee|cappuccino|espresso|latte|mocha|macchiato|boba|smoothie|shake|milk|oat\s*milk|oatmilk|almond\s*milk|almondmilk|soy\s*milk|soymilk|coconut\s*milk|dairy|yogurt|fruit|melon|watermelon|apple|orange|banana|berry|berries|grape|citrus|salad|raw|fresh|broth|soup)\b/i;
 
@@ -1589,6 +1590,40 @@ app.post('/api/jobs/upsert', async (req, res) => {
   } catch (err) {
     console.error('Failed to upsert job:', err);
     res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+app.post('/api/jobs/submit', async (req, res) => {
+  try {
+    const { jobId, userId, kind, mode, text, images, imageUrls } = req.body;
+    if (!jobId) {
+      return res.status(400).json({ error: 'jobId is required' });
+    }
+    await submitServerJob({ jobId, userId, kind, mode, text, images, imageUrls });
+    res.json({ success: true, jobId, status: 'queued' });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to submit job to cloud' });
+  }
+});
+
+app.get('/api/jobs/status', async (req, res) => {
+  try {
+    const { jobId, userId } = req.query;
+    if (!jobId && !userId) {
+      return res.status(400).json({ error: 'jobId or userId is required' });
+    }
+    const { supabase, isSupabaseConfigured } = await import('./src/utils/supabaseClient');
+    if (!isSupabaseConfigured) {
+      return res.json({ jobs: [] });
+    }
+    let query = supabase.from('agent_jobs').select('*');
+    if (jobId) query = query.eq('id', String(jobId));
+    if (userId) query = query.eq('user_id', String(userId));
+    const { data, error } = await query;
+    if (error) throw error;
+    res.json({ jobs: data || [] });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to fetch job status' });
   }
 });
 
