@@ -342,7 +342,7 @@ export default function FoodHistoryTab({
   const combinedItems = React.useMemo(() => {
     const savedLogs = activeFoodLogs.map(log => {
       let dateIso = new Date().toISOString();
-      if (log.id.startsWith('food_')) {
+      if (log.id && typeof log.id === 'string' && log.id.startsWith('food_')) {
         const ts = parseInt(log.id.split('_')[1]);
         if (!isNaN(ts)) {
           dateIso = new Date(ts).toISOString();

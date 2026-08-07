@@ -1671,7 +1671,36 @@ app.get('/api/jobs/status', async (req, res) => {
     query = query.order('updated_at', { ascending: false }).limit(20);
     const { data, error } = await query;
     if (error) throw error;
-    res.json({ jobs: data || [] });
+
+    const now = Date.now();
+    const staleThresholdMs = 180000; // 3 minutes
+    const processedJobs = await Promise.all((data || []).map(async (job: any) => {
+      if (job.status === 'running' && job.updated_at) {
+        const updatedAtTime = new Date(job.updated_at).getTime();
+        if (now - updatedAtTime > staleThresholdMs) {
+          console.warn(`[JobsStatus] Auto-failing stale running job ${job.id} (updated ${Math.round((now - updatedAtTime) / 1000)}s ago)`);
+          const failedJob = {
+            ...job,
+            status: 'failed',
+            status_message: 'Analysis timed out on server (>3 min). Tap Retry to try again.',
+            updated_at: new Date().toISOString()
+          };
+          try {
+            await supabaseAdmin.from('agent_jobs').update({
+              status: 'failed',
+              status_message: 'Analysis timed out on server (>3 min). Tap Retry to try again.',
+              updated_at: new Date().toISOString()
+            }).eq('id', job.id);
+          } catch (uErr) {
+            console.error('[JobsStatus] Failed to update stale job status in DB:', uErr);
+          }
+          return failedJob;
+        }
+      }
+      return job;
+    }));
+
+    res.json({ jobs: processedJobs });
   } catch (err: any) {
     res.status(500).json({ error: err.message || 'Failed to fetch job status' });
   }
@@ -4259,7 +4288,7 @@ app.post("/api/gemini/food-analyze", async (req, res) => {
     // Frontend sends the user's explicit mode selection (review | compare | edit) from the pill toggle.
     // When the user has explicitly selected "Edit", treat any text-only follow-up as a modification
     // command regardless of wording, instead of relying solely on keyword matching.
-    const userExplicitlySelectedEditMode = req.body.userSelectedMode === 'edit';
+    const userExplicitlySelectedEditMode = req.body.userSelectedMode === 'edit' || req.body.userSelectedMode === 'modify';
 
     const isExplicitModify = !!(
       activeMeal &&
@@ -4268,7 +4297,7 @@ app.post("/api/gemini/food-analyze", async (req, res) => {
       (
         isPureWeightModification ||
         userExplicitlySelectedEditMode ||
-        /\b(change|modify|update|remove|delete|correct|instead|replace|adjust\s+recipe|edit\s+ingredients)\b/i.test(message)
+        /\b(change|modify|update|remove|delete|correct|instead|replace|adjust|had|ate|only|portion|fraction|half|quarter|third|\d+\/\d+)\b/i.test(message)
       )
     );
 
@@ -7037,7 +7066,7 @@ function parseServingSizeGrams(ssVal: string, totalItemWeight: number): number {
     // 2. Prepend active state to Master System Instructions
     let effectiveActiveMeal = activeMeal;
     const hasUploadedNewImages = imagePayloads && imagePayloads.length > 0;
-    if (scoutRecommendedMode === "new_log" || (hasUploadedNewImages && !isExplicitModify)) {
+    if ((scoutRecommendedMode === "new_log" && !isExplicitModify && !userExplicitlySelectedEditMode) || (hasUploadedNewImages && !isExplicitModify)) {
       addDebugLog(`[State Isolation] New image scan or new_log mode detected. Isolating activeMeal context so Dietitian operates on clean state.`);
       effectiveActiveMeal = null;
       historyContext = "";
@@ -13202,9 +13231,11 @@ app.get("/api/gemini/test-menu-image-search", async (req, res) => {
 // Endpoint to fetch real-time agent thinking process logs
 app.get("/api/gemini/debug-logs", (req, res) => {
   const sessionId = (req.headers["x-session-id"] as string) || (req.query.sessionId as string) || "global";
-  let logs = globalDebugLogs;
-  if (sessionId !== "global" && sessionDebugLogs[sessionId]) {
-    logs = sessionDebugLogs[sessionId];
+  let logs: any[] = [];
+  if (sessionId !== "global") {
+    logs = sessionDebugLogs[sessionId] || [];
+  } else {
+    logs = globalDebugLogs;
   }
   res.json({ logs });
 });

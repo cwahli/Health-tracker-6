@@ -7,7 +7,7 @@ import { FoodLog } from '../types';
 export function resolveFoodImage(img: string | undefined | null, foodLogs: FoodLog[], parentLog?: FoodLog): string | undefined {
   const targetImg = img || (parentLog?.imageUrls && parentLog.imageUrls.length > 0 ? parentLog.imageUrls[0] : undefined);
   if (!targetImg || targetImg === '[image_removed_for_snapshot]') return undefined;
-  if (!targetImg.startsWith('ref:')) return targetImg;
+  if (typeof targetImg !== 'string' || !targetImg.startsWith('ref:')) return targetImg;
   
   const primaryId = targetImg.replace('ref:', '');
   const primaryLog = foodLogs.find(f => f.id === primaryId);

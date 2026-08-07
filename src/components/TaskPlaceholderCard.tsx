@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { motion } from 'motion/react';
-import { Loader2, Trash2, XCircle, CheckCircle2, AlertTriangle, Eye, Save } from 'lucide-react';
+import { Loader2, Trash2, XCircle, CheckCircle2, AlertTriangle, Eye, Save, RotateCcw } from 'lucide-react';
 import { AgentJob } from '../jobs/types';
 import { ImageStore } from '../jobs/ImageStore';
 import { JobStore } from '../jobs/JobStore';
@@ -325,13 +325,29 @@ export default function TaskPlaceholderCard({
             )}
 
             {(job.status === 'failed' || job.status === 'cancelled') && (
-              <button
-                onClick={() => onView(job.id)}
-                className="px-3 py-1.5 text-xs font-bold text-indigo-600 hover:bg-indigo-50 dark:hover:bg-indigo-950/20 rounded-xl transition-all flex items-center gap-1 cursor-pointer"
-              >
-                <Eye className="w-3.5 h-3.5" />
-                View Status
-              </button>
+              <>
+                <button
+                  onClick={() => {
+                    JobStore.updateJob(job.id, {
+                      status: 'queued',
+                      retryNotBefore: undefined,
+                      error: undefined,
+                      statusMessage: 'Retrying analysis...'
+                    });
+                  }}
+                  className="px-3 py-1.5 text-xs font-bold text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-950/20 rounded-xl transition-all flex items-center gap-1 cursor-pointer"
+                >
+                  <RotateCcw className="w-3.5 h-3.5" />
+                  Retry
+                </button>
+                <button
+                  onClick={() => onView(job.id)}
+                  className="px-3 py-1.5 text-xs font-bold text-indigo-600 hover:bg-indigo-50 dark:hover:bg-indigo-950/20 rounded-xl transition-all flex items-center gap-1 cursor-pointer"
+                >
+                  <Eye className="w-3.5 h-3.5" />
+                  View Status
+                </button>
+              </>
             )}
 
             {job.status === 'succeeded' && (

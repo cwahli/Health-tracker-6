@@ -2443,6 +2443,26 @@ ${logsText}`);
           );
         };
 
+        const lastFoodLogForJob = [...existingMsgs].reverse().find(m => m.data?.pendingFoodLog)?.pendingFoodLog;
+        let prunedMealForJob = null;
+        if (lastFoodLogForJob) {
+          try {
+            prunedMealForJob = JSON.parse(JSON.stringify(lastFoodLogForJob));
+            if (prunedMealForJob.itemsBreakdown) {
+              prunedMealForJob.itemsBreakdown = prunedMealForJob.itemsBreakdown.map((item: any) => {
+                const cleaned = { ...item };
+                delete cleaned.labelNutrientsPerServing;
+                return cleaned;
+              });
+            }
+          } catch (e) {
+            prunedMealForJob = lastFoodLogForJob;
+          }
+        }
+
+        const lastScoutMsgForJob = [...existingMsgs].reverse().find(m => m.data?.scoutItems && m.data.scoutItems.length > 0);
+        const scoutItemsForJob = lastScoutMsgForJob?.data?.scoutItems || activeScoutItemsFallback || [];
+
         getImagesAsBase64(finalImages).then((stagedImagesForSubmit) => {
           fetch('/api/jobs/submit', {
             method: 'POST',
@@ -2461,10 +2481,10 @@ ${logsText}`);
               engine: selectedModelId || 'gemini-3.5-flash-lite',
               biomarkersNeedingImprovement: [],
               remainingAllowance: remainingAllowance || null,
-              activeMeal: null,
+              activeMeal: prunedMealForJob,
               foodLogs: [],
               userSelectedMode: submissionMode,
-              activeScoutItems: []
+              activeScoutItems: scoutItemsForJob
             })
           })
           .then(async (res) => {
@@ -5255,6 +5275,23 @@ ${JSON.stringify(profile, null, 2)}`);
                         </div>
                         
                         <div className="flex flex-col sm:flex-row gap-2 font-sans">
+                          {jobId && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                JobStore.updateJob(jobId, {
+                                  status: 'queued',
+                                  retryNotBefore: undefined,
+                                  error: undefined,
+                                  statusMessage: 'Retrying analysis...'
+                                });
+                              }}
+                              className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold shadow-md shadow-emerald-600/10 flex items-center justify-center gap-1.5 transition-all cursor-pointer"
+                            >
+                              <RotateCcw className="w-3.5 h-3.5" />
+                              Retry Analysis
+                            </button>
+                          )}
                           <button
                             type="button"
                             onClick={() => {
@@ -5263,7 +5300,7 @@ ${JSON.stringify(profile, null, 2)}`);
                             className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold shadow-md shadow-indigo-600/10 flex items-center justify-center gap-1.5 transition-all cursor-pointer"
                           >
                             <ShieldAlert className="w-3.5 h-3.5" />
-                            Skip to Next Agent
+                            Close Chat
                           </button>
                         </div>
                       </div>

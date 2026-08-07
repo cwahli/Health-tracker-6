@@ -100,22 +100,49 @@ export async function submitServerJob(payload: ServerJobPayload): Promise<void> 
         activeScoutItems: payload.activeScoutItems || []
       };
 
-      // Server background job worker invocation via loopback (Note: Cloud Run must use CPU always allocated)
-      const response = await fetch(`${baseUrl}/api/gemini/food-analyze?stream=true`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-Session-ID': 'server-job-' + jobId
-        },
-        body: JSON.stringify(bodyData)
-      });
+      // Server background job worker invocation via loopback with AbortController timeout
+      const controller = new AbortController();
+      const globalTimeout = setTimeout(() => {
+        controller.abort(new Error('Analysis request timed out after 180s.'));
+      }, 180000);
+
+      let chunkTimer: NodeJS.Timeout | null = null;
+      const resetChunkTimer = () => {
+        if (chunkTimer) clearTimeout(chunkTimer);
+        chunkTimer = setTimeout(() => {
+          controller.abort(new Error('Stream stalled: No response from analysis engine for 45s.'));
+        }, 45000);
+      };
+
+      resetChunkTimer();
+
+      let response: Response;
+      try {
+        response = await fetch(`${baseUrl}/api/gemini/food-analyze?stream=true`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Session-ID': 'server-job-' + jobId
+          },
+          body: JSON.stringify(bodyData),
+          signal: controller.signal
+        });
+      } catch (fetchErr: any) {
+        if (chunkTimer) clearTimeout(chunkTimer);
+        clearTimeout(globalTimeout);
+        throw fetchErr;
+      }
 
       if (!response.ok) {
+        if (chunkTimer) clearTimeout(chunkTimer);
+        clearTimeout(globalTimeout);
         throw new Error(`Local food-analyze failed with status ${response.status}`);
       }
 
       const reader = response.body?.getReader();
       if (!reader) {
+        if (chunkTimer) clearTimeout(chunkTimer);
+        clearTimeout(globalTimeout);
         throw new Error('Response body stream is not readable');
       }
 
@@ -123,47 +150,53 @@ export async function submitServerJob(payload: ServerJobPayload): Promise<void> 
       let buffer = '';
       let finalData: any = null;
 
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          resetChunkTimer();
+          if (done) break;
 
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || '';
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || '';
 
-        for (const line of lines) {
-          const trimmed = line.trim();
-          if (!trimmed.startsWith('data: ')) continue;
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed.startsWith('data: ')) continue;
 
-          const rawData = trimmed.slice(6);
-          if (!rawData) continue;
+            const rawData = trimmed.slice(6);
+            if (!rawData) continue;
 
-          try {
-            const parsed = JSON.parse(rawData);
-            if (parsed.type === 'log') {
-              accumulatedLogs.push(`[${parsed.logType || 'info'}] ${parsed.message}`);
-              
-              if (parsed.logType === 'status') {
-                let prog = currentProgress;
-                const msg = parsed.message || '';
-                if (msg.toLowerCase().includes('scout')) {
-                  prog = Math.max(prog, 30);
-                } else if (msg.toLowerCase().includes('database') || msg.toLowerCase().includes('usda') || msg.toLowerCase().includes('search')) {
-                  prog = Math.max(prog, 50);
-                } else if (msg.toLowerCase().includes('dietitian') || msg.toLowerCase().includes('nutritionist')) {
-                  prog = Math.max(prog, 70);
-                } else if (msg.toLowerCase().includes('final')) {
-                  prog = Math.max(prog, 90);
+            try {
+              const parsed = JSON.parse(rawData);
+              if (parsed.type === 'log') {
+                accumulatedLogs.push(`[${parsed.logType || 'info'}] ${parsed.message}`);
+                
+                if (parsed.logType === 'status') {
+                  let prog = currentProgress;
+                  const msg = parsed.message || '';
+                  if (msg.toLowerCase().includes('scout')) {
+                    prog = Math.max(prog, 30);
+                  } else if (msg.toLowerCase().includes('database') || msg.toLowerCase().includes('usda') || msg.toLowerCase().includes('search')) {
+                    prog = Math.max(prog, 50);
+                  } else if (msg.toLowerCase().includes('dietitian') || msg.toLowerCase().includes('nutritionist')) {
+                    prog = Math.max(prog, 70);
+                  } else if (msg.toLowerCase().includes('final')) {
+                    prog = Math.max(prog, 90);
+                  }
+                  await updateSupabaseProgress(prog, msg);
                 }
-                await updateSupabaseProgress(prog, msg);
+              } else if (parsed.final === true && parsed.result) {
+                finalData = parsed.result;
               }
-            } else if (parsed.final === true && parsed.result) {
-              finalData = parsed.result;
+            } catch (err) {
+              // ignore JSON parse error on incomplete chunks
             }
-          } catch (err) {
-            // ignore JSON parse error on incomplete chunks
           }
         }
+      } finally {
+        if (chunkTimer) clearTimeout(chunkTimer);
+        clearTimeout(globalTimeout);
       }
 
       if (!finalData) {
@@ -233,11 +266,19 @@ export async function submitServerJob(payload: ServerJobPayload): Promise<void> 
       }
     } catch (err: any) {
       console.error(`[ServerJobs] Job ${jobId} failed:`, err);
+      accumulatedLogs.push(`[error] Job execution failed: ${err.message || String(err)}`);
+      const errorCleanResult = {
+        message: err.message || 'Server analysis failed or timed out',
+        error: err.message || 'Unknown error',
+        backendLogs: accumulatedLogs.join('\n').slice(0, 200000),
+        photoUrl: photoUrl || undefined
+      };
       if (isSupabaseConfigured) {
         try {
           await supabaseAdmin.from('agent_jobs').update({
             status: 'failed',
-            status_message: err.message || 'Server analysis failed',
+            status_message: err.message || 'Server analysis failed or timed out. Please tap Retry.',
+            clean_result: errorCleanResult,
             updated_at: new Date().toISOString()
           }).eq('id', jobId);
         } catch (dbErr) {

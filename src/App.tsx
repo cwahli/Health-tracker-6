@@ -1005,125 +1005,159 @@ export default function App() {
               }
               pollAttempts++;
 
+              let serverJob: any = null;
               try {
                 const statusRes = await fetch(`/api/jobs/status?jobId=${job.id}&userId=${auth.currentUser?.uid || 'anonymous'}`);
-                if (!statusRes.ok) throw new Error(`HTTP error ${statusRes.status}`);
-                const { jobs } = await statusRes.json();
-                const serverJob = jobs && jobs[0];
-                if (serverJob) {
-                  let progressVal = serverJob.progress_percent || 5;
-                  let statusMsg = serverJob.status_message || 'Analyzing on server...';
-
-                  // Update UI with the progress from the server
-                  JobStore.updateJob(job.id, {
-                    status: serverJob.status,
-                    statusMessage: statusMsg,
-                    progressPercent: progressVal,
-                  });
-
-                  if (serverJob.status === 'succeeded') {
-                    const cleanResult = serverJob.clean_result || {};
-                    const pendingFoodLog =
-                      cleanResult.pendingFoodLog ||
-                      cleanResult.data ||
-                      null;
-                    const messageText =
-                      cleanResult.message ||
-                      cleanResult.text ||
-                      pendingFoodLog?.message ||
-                      'Analysis complete.';
-                    const agentResult = {
-                      scoutScratchpad: cleanResult.dietitianScratchpad ? undefined : cleanResult.scoutScratchpad,
-                      dietitianScratchpad: cleanResult.dietitianScratchpad || '',
-                      backendLogs: cleanResult.backendLogs || '',
-                      globalLiveLogs: cleanResult.backendLogs || '',
-                      dietitianAnswer: cleanResult.message || cleanResult.text || '',
-                      scoutItems: cleanResult.scoutItems,
-                      ...(cleanResult.agentResult || {}),
-                    };
-
-                    // Drop prior live/placeholder assistants; keep user messages
-                    const withoutLive = (job.messages || []).filter(
-                      (m) => !(m.role === 'assistant' && (m.isLive || !m.data?.pendingFoodLog && !m.pendingFoodLog))
-                    );
-                    // Simpler: keep only user (+ welcome if any), append one final assistant
-                    const userMsgs = (job.messages || []).filter((m) => m.role === 'user');
-                    const assistantMsg = {
-                      id: `msg_assistant_${job.id}`,
-                      role: 'assistant',
-                      content: messageText,
-                      timestamp: new Date().toISOString(),
-                      isLive: false,
-                      agentType: 'food',
-                      pendingFoodLog,
-                      data: {
-                        pendingFoodLog,
-                        hasImage: !!(serverJob.photo_url || pendingFoodLog?.imageUrl || (job.inputSnapshot as any)?.hasImage),
-                        photoUrl: serverJob.photo_url || cleanResult.photoUrl,
-                        debugUrl: serverJob.debug_url || cleanResult.debugUrl,
-                        scoutItems: cleanResult.scoutItems || [],
-                        mode: serverJob.mode || cleanResult.mode || 'review',
-                        agentResult,
-                      },
-                    };
-                    const updatedMessages = [...userMsgs, assistantMsg];
-                    JobStore.updateJob(job.id, {
-                      status: 'succeeded',
-                      result: { ...cleanResult, pendingFoodLog, photoUrl: serverJob.photo_url || cleanResult.photoUrl, debugUrl: serverJob.debug_url || cleanResult.debugUrl },
-                      messages: updatedMessages,
-                      progressPercent: 100,
-                      statusMessage: 'Analysis complete',
-                      finishedAt: new Date().toISOString(),
-                    });
-
-                    // Save diagnostic logs to log history page
-                    const reqId = serverJob.request_id || job.requestId || job.id;
-                    const summary = pendingFoodLog?.name || messageText || 'Food Analysis';
-                    const rawLogs = cleanResult.backendLogs || '';
-                    let logsList: { timestamp: string; message: string }[] = [];
-                    if (typeof rawLogs === 'string' && rawLogs.trim().length > 0) {
-                      logsList = rawLogs.split('\n').filter(Boolean).map(line => ({
-                        timestamp: new Date().toISOString(),
-                        message: line
-                      }));
-                    }
-                    fetch(`/api/gemini/debug-logs?sessionId=${reqId}`)
-                      .then(res => res.ok ? res.json() : null)
-                      .then(data => {
-                        if (data && Array.isArray(data.logs) && data.logs.length > 0) {
-                          logsList = data.logs;
-                        }
-                        saveAgentRequestLog({
-                          id: reqId,
-                          timestamp: new Date().toISOString(),
-                          summary,
-                          logs: logsList.length > 0 ? logsList : [{ timestamp: new Date().toISOString(), message: `[food_agent] Completed analysis for ${summary}` }]
-                        });
-                      })
-                      .catch(() => {
-                        saveAgentRequestLog({
-                          id: reqId,
-                          timestamp: new Date().toISOString(),
-                          summary,
-                          logs: logsList.length > 0 ? logsList : [{ timestamp: new Date().toISOString(), message: `[food_agent] Completed analysis for ${summary}` }]
-                        });
-                      });
-
-                    done = true;
-                    return; // Done!
-                  } else if (serverJob.status === 'failed') {
-                    throw new Error(serverJob.status_message || 'Server job failed');
-                  }
+                if (statusRes.ok) {
+                  const { jobs } = await statusRes.json();
+                  serverJob = jobs && jobs[0];
                 }
               } catch (pollErr) {
                 console.warn('[JobQueueRunner] Error polling status:', pollErr);
+              }
+
+              if (serverJob) {
+                let progressVal = serverJob.progress_percent || 5;
+                let statusMsg = serverJob.status_message || 'Analyzing on server...';
+
+                // Update UI with the progress from the server
+                JobStore.updateJob(job.id, {
+                  status: serverJob.status,
+                  statusMessage: statusMsg,
+                  progressPercent: progressVal,
+                });
+
+                if (serverJob.status === 'succeeded') {
+                  const cleanResult = serverJob.clean_result || {};
+                  const pendingFoodLog =
+                    cleanResult.pendingFoodLog ||
+                    cleanResult.data ||
+                    null;
+                  const messageText =
+                    cleanResult.message ||
+                    cleanResult.text ||
+                    pendingFoodLog?.message ||
+                    'Analysis complete.';
+                  const agentResult = {
+                    scoutScratchpad: cleanResult.dietitianScratchpad ? undefined : cleanResult.scoutScratchpad,
+                    dietitianScratchpad: cleanResult.dietitianScratchpad || '',
+                    backendLogs: cleanResult.backendLogs || '',
+                    globalLiveLogs: cleanResult.backendLogs || '',
+                    dietitianAnswer: cleanResult.message || cleanResult.text || '',
+                    scoutItems: cleanResult.scoutItems,
+                    ...(cleanResult.agentResult || {}),
+                  };
+
+                  const userMsgs = (job.messages || []).filter((m) => m.role === 'user');
+                  const assistantMsg = {
+                    id: `msg_assistant_${job.id}`,
+                    role: 'assistant',
+                    content: messageText,
+                    timestamp: new Date().toISOString(),
+                    isLive: false,
+                    agentType: 'food',
+                    pendingFoodLog,
+                    data: {
+                      pendingFoodLog,
+                      hasImage: !!(serverJob.photo_url || pendingFoodLog?.imageUrl || (job.inputSnapshot as any)?.hasImage),
+                      photoUrl: serverJob.photo_url || cleanResult.photoUrl,
+                      debugUrl: serverJob.debug_url || cleanResult.debugUrl,
+                      scoutItems: cleanResult.scoutItems || [],
+                      mode: serverJob.mode || cleanResult.mode || 'review',
+                      agentResult,
+                    },
+                  };
+                  const updatedMessages = [...userMsgs, assistantMsg];
+                  JobStore.updateJob(job.id, {
+                    status: 'succeeded',
+                    result: { ...cleanResult, pendingFoodLog, photoUrl: serverJob.photo_url || cleanResult.photoUrl, debugUrl: serverJob.debug_url || cleanResult.debugUrl },
+                    messages: updatedMessages,
+                    progressPercent: 100,
+                    statusMessage: 'Analysis complete',
+                    finishedAt: new Date().toISOString(),
+                  });
+
+                  // Save diagnostic logs to log history page
+                  const reqId = serverJob.request_id || job.requestId || job.id;
+                  const summary = pendingFoodLog?.name || messageText || 'Food Analysis';
+                  const rawLogs = cleanResult.backendLogs || '';
+                  let logsList: { timestamp: string; message: string }[] = [];
+                  if (typeof rawLogs === 'string' && rawLogs.trim().length > 0) {
+                    logsList = rawLogs.split('\n').filter(Boolean).map(line => ({
+                      timestamp: new Date().toISOString(),
+                      message: line
+                    }));
+                  }
+                  fetch(`/api/gemini/debug-logs?sessionId=${reqId}`)
+                    .then(res => res.ok ? res.json() : null)
+                    .then(data => {
+                      if (data && Array.isArray(data.logs) && data.logs.length > 0) {
+                        logsList = data.logs;
+                      }
+                      saveAgentRequestLog({
+                        id: reqId,
+                        timestamp: new Date().toISOString(),
+                        summary,
+                        logs: logsList.length > 0 ? logsList : [{ timestamp: new Date().toISOString(), message: `[food_agent] Completed analysis for ${summary}` }]
+                      });
+                    })
+                    .catch(() => {
+                      saveAgentRequestLog({
+                        id: reqId,
+                        timestamp: new Date().toISOString(),
+                        summary,
+                        logs: logsList.length > 0 ? logsList : [{ timestamp: new Date().toISOString(), message: `[food_agent] Completed analysis for ${summary}` }]
+                      });
+                    });
+
+                  done = true;
+                  return; // Done!
+                } else if (serverJob.status === 'failed') {
+                  const reqId = serverJob.request_id || job.requestId || job.id;
+                  const failMsg = serverJob.status_message || 'Analysis failed on server.';
+                  const cleanResult = serverJob.clean_result || {};
+                  const rawLogs = cleanResult.backendLogs || failMsg;
+                  const logsList = (typeof rawLogs === 'string' && rawLogs.trim().length > 0
+                    ? rawLogs.split('\n').filter(Boolean).map(line => ({ timestamp: new Date().toISOString(), message: line }))
+                    : [{ timestamp: new Date().toISOString(), message: `[error] ${failMsg}` }]);
+
+                  saveAgentRequestLog({
+                    id: reqId,
+                    timestamp: new Date().toISOString(),
+                    summary: `Failed: ${job.kind || 'Food Log'}`,
+                    logs: logsList
+                  });
+
+                  JobStore.updateJob(job.id, {
+                    status: 'failed',
+                    statusMessage: failMsg,
+                    finishedAt: new Date().toISOString(),
+                    error: { class: 'transient', message: failMsg }
+                  });
+                  done = true;
+                  return;
+                }
               }
 
               await new Promise(resolve => setTimeout(resolve, 2000));
             }
 
             if (!done) {
-              throw new Error('Timeout waiting for server background job');
+              const reqId = job.requestId || job.id;
+              const timeoutMsg = 'Analysis timed out after 3 minutes. Tap Retry to try again.';
+              saveAgentRequestLog({
+                id: reqId,
+                timestamp: new Date().toISOString(),
+                summary: `Timed Out: ${job.kind || 'Food Log'}`,
+                logs: [{ timestamp: new Date().toISOString(), message: `[error] ${timeoutMsg}` }]
+              });
+
+              JobStore.updateJob(job.id, {
+                status: 'failed',
+                statusMessage: timeoutMsg,
+                finishedAt: new Date().toISOString(),
+                error: { class: 'transient', message: timeoutMsg }
+              });
             }
             return;
           }
@@ -3729,9 +3763,12 @@ export default function App() {
   // Add / Edit logs handlers
   const handleLogFood = async (food: FoodLog) => {
     let compressedFood = { ...food };
+    if (!compressedFood.id) {
+      compressedFood.id = `food_${Date.now()}`;
+    }
     
     // Compress imageUrl to 800x800 when logging
-    if (compressedFood.imageUrl && compressedFood.imageUrl.startsWith('data:image/')) {
+    if (compressedFood.imageUrl && typeof compressedFood.imageUrl === 'string' && compressedFood.imageUrl.startsWith('data:image/')) {
       try {
         compressedFood.imageUrl = await compressImage(compressedFood.imageUrl, 800, 800, 0.7);
       } catch (e) {
@@ -3740,10 +3777,10 @@ export default function App() {
     }
     
     // Compress imageUrls to 800x800 when logging
-    if (compressedFood.imageUrls && compressedFood.imageUrls.length > 0) {
+    if (compressedFood.imageUrls && Array.isArray(compressedFood.imageUrls) && compressedFood.imageUrls.length > 0) {
       const newUrls = [];
       for (const url of compressedFood.imageUrls) {
-        if (url && url.startsWith('data:image/')) {
+        if (url && typeof url === 'string' && url.startsWith('data:image/')) {
           try {
             const comp = await compressImage(url, 800, 800, 0.7);
             newUrls.push(comp);
@@ -3772,9 +3809,12 @@ export default function App() {
   };
   const handleUpdateFoodLog = async (updatedLog: FoodLog) => {
     let compressedFood = { ...updatedLog };
+    if (!compressedFood.id) {
+      compressedFood.id = `food_${Date.now()}`;
+    }
     
     // Compress imageUrl to 800x800 when logging
-    if (compressedFood.imageUrl && compressedFood.imageUrl.startsWith('data:image/')) {
+    if (compressedFood.imageUrl && typeof compressedFood.imageUrl === 'string' && compressedFood.imageUrl.startsWith('data:image/')) {
       try {
         compressedFood.imageUrl = await compressImage(compressedFood.imageUrl, 800, 800, 0.7);
       } catch (e) {
@@ -3783,10 +3823,10 @@ export default function App() {
     }
     
     // Compress imageUrls to 800x800 when logging
-    if (compressedFood.imageUrls && compressedFood.imageUrls.length > 0) {
+    if (compressedFood.imageUrls && Array.isArray(compressedFood.imageUrls) && compressedFood.imageUrls.length > 0) {
       const newUrls = [];
       for (const url of compressedFood.imageUrls) {
-        if (url && url.startsWith('data:image/')) {
+        if (url && typeof url === 'string' && url.startsWith('data:image/')) {
           try {
             const comp = await compressImage(url, 800, 800, 0.7);
             newUrls.push(comp);

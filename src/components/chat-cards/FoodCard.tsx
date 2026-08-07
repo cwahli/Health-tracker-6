@@ -357,34 +357,46 @@ export const ScratchpadMarkdownViewer: React.FC<{ content: any; className?: stri
       // Gather full log history without cropping
       let fullLogsText = '';
       const foodLog = pendingFoodLog || msg?.data?.pendingFoodLog || msg?.pendingFoodLog;
-      const reqSessionId = msg?.data?.sessionId || msg?.sessionId || (typeof window !== 'undefined' && (window as any).__healthSessionId) || sessionStorage.getItem('health_session_id') || '';
+      const specificId = msg?.data?.requestId || msg?.data?.sessionId || msg?.sessionId || msg?.id || foodLog?.id || '';
 
-      // 1. Try server endpoint first for full un-cropped debug logs
-      try {
-        const url = reqSessionId ? `/api/gemini/debug-logs?sessionId=${encodeURIComponent(reqSessionId)}` : '/api/gemini/debug-logs';
-        const res = await fetch(url, {
-          headers: reqSessionId ? { 'X-Session-ID': reqSessionId } : {},
-        });
-        if (res.ok) {
-          const data = await res.json();
-          if (Array.isArray(data.logs) && data.logs.length > 0) {
-            fullLogsText = data.logs.map((l: any) => {
-              if (typeof l === 'string') return l;
-              if (l.message) return l.timestamp ? `[${l.timestamp}] ${l.message}` : l.message;
-              return JSON.stringify(l);
-            }).join('\n');
-          }
-        }
-      } catch {
-        /* ignore server fetch errors and fall back to local logs */
+      // 1. Check inline logs on msg object or foodLog object first
+      if (msg?.data?.agentResult?.backendLogs && Array.isArray(msg.data.agentResult.backendLogs) && msg.data.agentResult.backendLogs.length > 0) {
+        fullLogsText = msg.data.agentResult.backendLogs.map((l: any) => typeof l === 'string' ? l : (l.message || JSON.stringify(l))).join('\n');
+      } else if (foodLog?.backendLogs && Array.isArray(foodLog.backendLogs) && foodLog.backendLogs.length > 0) {
+        fullLogsText = foodLog.backendLogs.map((l: any) => typeof l === 'string' ? l : (l.message || JSON.stringify(l))).join('\n');
+      } else if (msg?.data?.debugLogs) {
+        const dLogs = msg.data.debugLogs;
+        fullLogsText = Array.isArray(dLogs) ? dLogs.map((l: any) => l.message || String(l)).join('\n') : String(dLogs);
       }
 
-      // 2. Fallback to localStorage request logs tracker if server endpoint returned empty
-      if (!fullLogsText.trim()) {
+      // 2. Try server endpoint using the specific meal ID
+      if (!fullLogsText.trim() && specificId) {
+        try {
+          const url = `/api/gemini/debug-logs?sessionId=${encodeURIComponent(specificId)}`;
+          const res = await fetch(url, {
+            headers: { 'X-Session-ID': specificId },
+          });
+          if (res.ok) {
+            const data = await res.json();
+            if (Array.isArray(data.logs) && data.logs.length > 0) {
+              fullLogsText = data.logs.map((l: any) => {
+                if (typeof l === 'string') return l;
+                if (l.message) return l.timestamp ? `[${l.timestamp}] ${l.message}` : l.message;
+                return JSON.stringify(l);
+              }).join('\n');
+            }
+          }
+        } catch {
+          /* ignore server fetch errors and fall back to local logs */
+        }
+      }
+
+      // 3. Fallback to localStorage request logs tracker ONLY if matching specific ID
+      if (!fullLogsText.trim() && specificId) {
         try {
           const savedLogs = getAgentRequestLogs();
           if (savedLogs && savedLogs.length > 0) {
-            const matched = savedLogs.find(r => r.id === reqSessionId || r.id === msg?.id) || savedLogs[0];
+            const matched = savedLogs.find(r => r.id === specificId || r.id === msg?.id || r.id === foodLog?.id);
             if (matched && Array.isArray(matched.logs)) {
               fullLogsText = matched.logs.map(l => l.message).join('\n');
             }
@@ -392,12 +404,6 @@ export const ScratchpadMarkdownViewer: React.FC<{ content: any; className?: stri
         } catch (e) {
           /* ignore */
         }
-      }
-
-      // 3. Fallback to inline debug logs on msg object if still empty
-      if (!fullLogsText.trim() && msg?.data?.debugLogs) {
-        const dLogs = msg.data.debugLogs;
-        fullLogsText = Array.isArray(dLogs) ? dLogs.map((l: any) => l.message || String(l)).join('\n') : String(dLogs);
       }
 
       // Combine table markdown and full log history
