@@ -171,7 +171,14 @@ export async function submitServerJob(payload: ServerJobPayload): Promise<void> 
       }
 
       // Step B: Build clean result object
-      const pendingFoodLog = finalData.pendingFoodLog || finalData.data || finalData;
+      const foodLog =
+        finalData?.pendingFoodLog ||
+        finalData?.data ||
+        null;
+      // if finalData itself looks like a FoodLog (name + nutrients), use it
+      const pendingFoodLog =
+        foodLog ||
+        (finalData?.name && finalData?.nutrients ? finalData : finalData);
       
       if (pendingFoodLog && typeof pendingFoodLog === 'object') {
         pendingFoodLog.imageUrl = photoUrl || pendingFoodLog.imageUrl;
@@ -182,10 +189,15 @@ export async function submitServerJob(payload: ServerJobPayload): Promise<void> 
 
       const cleanResult = {
         pendingFoodLog: pendingFoodLog,
+        message: finalData?.message || finalData?.text || '',
+        text: finalData?.text || finalData?.message || '',
+        dietitianScratchpad: finalData?.dietitianScratchpad || '',
+        mode: finalData?.mode || mode || 'review',
+        scoutItems: finalData?.scoutItems || undefined,
         photoUrl: photoUrl || undefined,
         debugUrl: undefined as string | undefined,
-        mode: mode || 'review',
-        scoutItems: finalData.scoutItems || undefined
+        // Keep logs for multi-device + offline debug download (can be large but needed)
+        backendLogs: accumulatedLogs.join('\n').slice(0, 200000),
       };
 
       // Step C: Save full debug payload to Cloudflare R2

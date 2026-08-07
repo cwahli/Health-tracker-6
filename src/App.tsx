@@ -1021,41 +1021,58 @@ export default function App() {
                   });
 
                   if (serverJob.status === 'succeeded') {
-                    const cleanResult = serverJob.clean_result;
-                    const pendingFoodLog = cleanResult?.pendingFoodLog || cleanResult;
-                    const resultData = cleanResult?.pendingFoodLog || cleanResult;
+                    const cleanResult = serverJob.clean_result || {};
+                    const pendingFoodLog =
+                      cleanResult.pendingFoodLog ||
+                      cleanResult.data ||
+                      null;
+                    const messageText =
+                      cleanResult.message ||
+                      cleanResult.text ||
+                      pendingFoodLog?.message ||
+                      'Analysis complete.';
+                    const agentResult = {
+                      scoutScratchpad: cleanResult.dietitianScratchpad ? undefined : cleanResult.scoutScratchpad,
+                      dietitianScratchpad: cleanResult.dietitianScratchpad || '',
+                      backendLogs: cleanResult.backendLogs || '',
+                      globalLiveLogs: cleanResult.backendLogs || '',
+                      dietitianAnswer: cleanResult.message || cleanResult.text || '',
+                      scoutItems: cleanResult.scoutItems,
+                      ...(cleanResult.agentResult || {}),
+                    };
 
-                    // Reconstruct messages for UI if missing or not present
-                    let updatedMessages = job.messages || [];
-                    const hasAssistantMsg = updatedMessages.some(m => m.role === 'assistant');
-                    if (!hasAssistantMsg && resultData) {
-                      const assistantMsg: any = {
-                        id: `msg_assistant_${Date.now()}`,
-                        role: 'assistant',
-                        content: resultData.message || resultData.reply || resultData.globalSummary || 'Analysis complete.',
-                        timestamp: new Date().toISOString(),
-                        agentResult: resultData,
-                        agentType: 'food',
-                        pendingFoodLog: pendingFoodLog,
-                        data: {
-                          pendingFoodLog: pendingFoodLog,
-                          hasImage: !!(serverJob.photo_url || (job.inputSnapshot as any)?.hasImage),
-                          scoutItems: serverJob.clean_result?.scoutItems || [],
-                          scoutContentType: serverJob.clean_result?.scoutContentType || 'visual',
-                          mode: serverJob.mode || 'review',
-                          agentResult: resultData.agentResult || {}
-                        }
-                      };
-                      updatedMessages = [...updatedMessages, assistantMsg];
-                    }
-
+                    // Drop prior live/placeholder assistants; keep user messages
+                    const withoutLive = (job.messages || []).filter(
+                      (m) => !(m.role === 'assistant' && (m.isLive || !m.data?.pendingFoodLog && !m.pendingFoodLog))
+                    );
+                    // Simpler: keep only user (+ welcome if any), append one final assistant
+                    const userMsgs = (job.messages || []).filter((m) => m.role === 'user');
+                    const assistantMsg = {
+                      id: `msg_assistant_${job.id}`,
+                      role: 'assistant',
+                      content: messageText,
+                      timestamp: new Date().toISOString(),
+                      isLive: false,
+                      agentType: 'food',
+                      pendingFoodLog,
+                      data: {
+                        pendingFoodLog,
+                        hasImage: !!(serverJob.photo_url || pendingFoodLog?.imageUrl || (job.inputSnapshot as any)?.hasImage),
+                        photoUrl: serverJob.photo_url || cleanResult.photoUrl,
+                        debugUrl: serverJob.debug_url || cleanResult.debugUrl,
+                        scoutItems: cleanResult.scoutItems || [],
+                        mode: serverJob.mode || cleanResult.mode || 'review',
+                        agentResult,
+                      },
+                    };
+                    const updatedMessages = [...userMsgs, assistantMsg];
                     JobStore.updateJob(job.id, {
                       status: 'succeeded',
-                      finishedAt: new Date().toISOString(),
+                      result: { ...cleanResult, pendingFoodLog, photoUrl: serverJob.photo_url || cleanResult.photoUrl, debugUrl: serverJob.debug_url || cleanResult.debugUrl },
+                      messages: updatedMessages,
                       progressPercent: 100,
-                      statusMessage: 'Completed successfully',
-                      result: cleanResult,
-                      messages: updatedMessages
+                      statusMessage: 'Analysis complete',
+                      finishedAt: new Date().toISOString(),
                     });
 
                     done = true;

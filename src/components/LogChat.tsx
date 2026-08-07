@@ -1402,6 +1402,98 @@ ${logsText}`);
       const job = JobStore.getJob(jobId);
       if (!job) return;
 
+      if (job.status === 'succeeded' && type === 'food') {
+        const welcome = getWelcomeMessage();
+        
+        // Find existing user message or construct one
+        let userMsg: ChatMessage | undefined = job.messages?.find((m: any) => m.role === 'user');
+        if (!userMsg) {
+          userMsg = {
+            id: `msg_user_${jobId}`,
+            role: 'user',
+            content: job.inputSnapshot?.text || '',
+            timestamp: job.createdAt,
+            imageUrl: (job.inputSnapshot as any)?.hasImage ? 'loading' : undefined
+          };
+        }
+
+        if ((job.inputSnapshot as any)?.hasImage && userMsg.imageUrl === 'loading') {
+          try {
+            const images = await ImageStore.getImages(jobId);
+            if (images && images.length > 0) {
+              userMsg.imageUrl = typeof images[0] === 'string' ? images[0] : URL.createObjectURL(images[0] as Blob);
+              userMsg.imageUrls = images.map(img => typeof img === 'string' ? img : URL.createObjectURL(img as Blob));
+            }
+          } catch (err) {
+            console.warn('Failed to load images from ImageStore for LogChat:', err);
+          }
+        } else if (userMsg.imageUrl === 'Image reference preserved') {
+          try {
+            const images = await ImageStore.getImages(jobId);
+            if (images && images.length > 0) {
+              userMsg.imageUrl = typeof images[0] === 'string' ? images[0] : URL.createObjectURL(images[0] as Blob);
+              userMsg.imageUrls = images.map(img => typeof img === 'string' ? img : URL.createObjectURL(img as Blob));
+            }
+          } catch (err) {
+            console.warn('Failed to restore images for userMsg:', err);
+          }
+        }
+
+        const foodLog =
+          job.result?.pendingFoodLog ||
+          job.result?.raw?.data ||
+          job.result?.data ||
+          job.messages?.slice().reverse().find((m: any) => m.pendingFoodLog || m.data?.pendingFoodLog)?.pendingFoodLog ||
+          job.messages?.slice().reverse().find((m: any) => m.data?.pendingFoodLog)?.data?.pendingFoodLog;
+
+        // Attach images from ImageStore if foodLog lacks them
+        try {
+          const imgs = await ImageStore.getImages(jobId);
+          if (foodLog && imgs?.length) {
+            foodLog.imageUrls = imgs.map(img => typeof img === 'string' ? img : URL.createObjectURL(img as Blob));
+            foodLog.imageUrl = foodLog.imageUrls[0];
+          }
+        } catch (err) {
+          console.warn('Failed to load images from ImageStore for LogChat:', err);
+        }
+
+        const raw = job.result?.raw || job.result || {};
+        const assistantMsg: ChatMessage = {
+          id: `msg_assistant_${jobId}`,
+          role: 'assistant',
+          content: raw.message || raw.text || raw.reply || raw.globalSummary || 'Analysis complete.',
+          timestamp: job.updatedAt || new Date().toISOString(),
+          isLive: false,
+          agentResult: raw,
+          agentType: type as any,
+          pendingFoodLog: foodLog,
+          data: {
+            pendingFoodLog: foodLog, // REQUIRED for FoodCard
+            hasImage: !!(foodLog?.imageUrl || foodLog?.imageUrls?.length || (job.inputSnapshot as any)?.hasImage),
+            photoUrl: job.result?.photoUrl || raw.photoUrl,
+            debugUrl: job.result?.debugUrl || raw.debugUrl,
+            scoutItems: job.result?.scoutItems || raw.scoutItems || [],
+            scoutContentType: raw.scoutContentType,
+            mode: (job.inputSnapshot as any)?.mode || 'review',
+            comparison: raw.comparison,
+            agentResult: {
+              ...(raw.agentResult || {}),
+              scoutScratchpad: raw.agentResult?.scoutScratchpad || raw.scoutScratchpad || job.liveThoughts?.scout || '',
+              dietitianScratchpad: raw.agentResult?.dietitianScratchpad || raw.dietitianScratchpad || job.liveThoughts?.dietitian || '',
+              backendLogs: raw.agentResult?.backendLogs || raw.backendLogs || job.liveThoughts?.backendLogs || '',
+              globalLiveLogs: job.liveThoughts?.globalLiveLogs || '',
+              dbSearchLog: raw.agentResult?.dbSearchLog || job.liveThoughts?.dbSearchLog || ''
+            }
+          }
+        };
+        if (assistantMsg.pendingFoodLog) {
+          assistantMsg.pendingFoodLog.id = assistantMsg.pendingFoodLog.id || `food_${Date.now()}`;
+          assistantMsg.pendingFoodLog.chatTranscript = [userMsg, assistantMsg];
+        }
+        setMessages([welcome, userMsg, assistantMsg], false);
+        return;
+      }
+
       if (job.status === 'draft') {
         setMessages([getWelcomeMessage()], false);
         return;
@@ -1614,6 +1706,57 @@ ${logsText}`);
       unsubscribe();
     };
   }, [jobId, isOpen, type]);
+
+  const handleDownloadDebug = async (jobIdToDownload: string, msg: any) => {
+    const job = JobStore.getJob(jobIdToDownload);
+    const localPayload = {
+      jobId: jobIdToDownload,
+      status: job?.status,
+      result: job?.result,
+      messages: job?.messages,
+      liveThoughts: job?.liveThoughts,
+      backendLogs:
+        job?.result?.backendLogs ||
+        msg.data?.agentResult?.backendLogs ||
+        msg.data?.agentResult?.globalLiveLogs ||
+        globalLiveLogsRef.current ||
+        '',
+      exportedAt: new Date().toISOString(),
+      source: 'client-fallback',
+    };
+
+    // 1) Try server proxy (auth-friendly)
+    try {
+      const uid = auth.currentUser?.uid || 'anonymous';
+      const res = await fetch(`/api/jobs/debug?jobId=${encodeURIComponent(jobIdToDownload)}&userId=${encodeURIComponent(uid)}`);
+      if (res.ok) {
+        const blob = await res.blob();
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `debug-${jobIdToDownload}.json`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        window.URL.revokeObjectURL(url);
+        return;
+      }
+    } catch (e) {
+      console.warn('Proxy download failed, trying local fallback:', e);
+    }
+
+    // 2) Try debugUrl only if same-origin or clearly public; on 401 fall through
+    // 3) Always available: download localPayload as JSON file
+    const blob = new Blob([JSON.stringify(localPayload, null, 2)], { type: 'application/json' });
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `debug-${jobIdToDownload}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    window.URL.revokeObjectURL(url);
+  };
 
   const [globalLiveLogs, setGlobalLiveLogs] = useState<string>('');
   const globalLiveLogsRef = useRef<string>('');
@@ -4968,19 +5111,22 @@ ${JSON.stringify(profile, null, 2)}`);
 
                       {(() => {
                         const debugUrl = msg.data?.debugUrl || (jobId ? JobStore.getJob(jobId)?.result?.debugUrl : undefined);
-                        if (!debugUrl) return null;
+                        if (!debugUrl && !jobId) return null;
                         return (
                           <div className="mt-2 pt-2 border-t border-slate-200/60 dark:border-slate-800">
-                            <a
-                              href={debugUrl}
-                              target="_blank"
-                              rel="noopener noreferrer"
+                            <button
+                              type="button"
+                              onClick={() => {
+                                if (jobId) {
+                                  handleDownloadDebug(jobId, msg);
+                                }
+                              }}
                               className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-slate-700 transition-all cursor-pointer"
                               title="Download complete raw debug logs from Cloudflare R2"
                             >
                               <Download className="w-3.5 h-3.5 text-indigo-500" />
                               <span>Download Debug Logs</span>
-                            </a>
+                            </button>
                           </div>
                         );
                       })()}

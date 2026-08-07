@@ -1677,6 +1677,67 @@ app.get('/api/jobs/status', async (req, res) => {
   }
 });
 
+app.get('/api/jobs/debug', async (req, res) => {
+  try {
+    const { jobId, userId } = req.query;
+    if (!jobId || !userId) {
+      return res.status(400).json({ error: 'jobId and userId query parameters are required' });
+    }
+    const { isSupabaseConfigured } = await import('./src/utils/supabaseClient');
+    if (!isSupabaseConfigured) {
+      return res.status(404).json({ error: 'Supabase is not configured' });
+    }
+    const { supabaseAdmin } = await import('./supabaseAdmin');
+    const { data: job, error } = await supabaseAdmin
+      .from('agent_jobs')
+      .select('*')
+      .eq('id', String(jobId))
+      .eq('user_id', String(userId))
+      .maybeSingle();
+
+    if (error) throw error;
+    if (!job) {
+      return res.status(404).json({ error: 'Job not found or access denied' });
+    }
+
+    let debugPayload = null;
+    if (job.debug_url) {
+      try {
+        const response = await fetch(job.debug_url);
+        if (response.ok) {
+          debugPayload = await response.json();
+        }
+      } catch (err) {
+        console.warn('Failed to fetch from debug_url, using DB fallback:', err);
+      }
+    }
+
+    if (!debugPayload) {
+      debugPayload = {
+        jobId: job.id,
+        userId: job.user_id,
+        kind: job.kind,
+        mode: job.mode,
+        status: job.status,
+        photoUrl: job.photo_url,
+        debugUrl: job.debug_url,
+        result: job.clean_result,
+        backendLogs: job.clean_result?.backendLogs || '',
+        createdAt: job.created_at,
+        updatedAt: job.updated_at,
+        source: 'server-db-row'
+      };
+    }
+
+    res.setHeader('Content-Type', 'application/json');
+    res.setHeader('Content-Disposition', `attachment; filename="debug-${jobId}.json"`);
+    res.json(debugPayload);
+  } catch (err: any) {
+    console.error('Failed to get job debug logs:', err);
+    res.status(500).json({ error: err.message || 'Failed to fetch debug logs' });
+  }
+});
+
 
 const CLOUDFLARE_ACCOUNT_ID = process.env.CLOUDFLARE_ACCOUNT_ID || 'd17eecca64f82625d29dc38b14f46c14';
 const CLOUDFLARE_R2_BUCKET_NAME = process.env.CLOUDFLARE_R2_BUCKET_NAME || 'health-tracker-photos';
