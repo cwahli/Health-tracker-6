@@ -421,16 +421,42 @@ function isDeepEqual(obj1: any, obj2: any): boolean {
   return true;
 }
 function sanitizeProfile(incomingProfile: any, activeEmail?: string): any {
-  if (!incomingProfile) return null;
+  const defaultEmail = (activeEmail || 'cwah.liu@gmail.com').toLowerCase().trim();
+  if (!incomingProfile) {
+    const isCwahEmpty = defaultEmail.includes('cwah.liu') || defaultEmail.includes('chiwah.liu') || defaultEmail.includes('john@mail') || defaultEmail.includes('john@gmail');
+    if (!isCwahEmpty) return null;
+    return {
+      nickname: 'C. Liu',
+      photoUrl: '',
+      email: 'cwah.liu@gmail.com',
+      age: 28,
+      ethnicity: 'Chinese',
+      weight: 70,
+      height: 175,
+      gender: 'Male',
+      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+      language: 'en',
+      userType: 'Admin',
+      topNutrientsToMonitor: PRIMARY_NUTRIENTS
+    };
+  }
   const emailLower = (incomingProfile.email || activeEmail || '').toLowerCase().trim();
-  const isCwah = emailLower.includes('cwah.liu') || emailLower.includes('chiwah.liu');
+  const nick = (incomingProfile.nickname || '').toLowerCase();
+  const isCwah =
+    emailLower.includes('cwah.liu') ||
+    emailLower.includes('chiwah.liu') ||
+    emailLower.includes('john@mail') ||
+    emailLower.includes('john@gmail') ||
+    nick.includes('john doe');
   if (isCwah) {
     return {
       ...incomingProfile,
       email: 'cwah.liu@gmail.com',
-      nickname: 'C. Liu',
+      nickname: (!incomingProfile.nickname || nick.includes('john doe')) ? 'C. Liu' : incomingProfile.nickname,
       age: incomingProfile.age || 28,
-      ethnicity: 'Chinese',
+      ethnicity: (incomingProfile.ethnicity === 'Unknown' || !incomingProfile.ethnicity || incomingProfile.ethnicity === 'Caucasian')
+        ? 'Chinese'
+        : incomingProfile.ethnicity,
       weight: incomingProfile.weight || 70,
       height: incomingProfile.height || 175,
       gender: (incomingProfile.gender === 'Unknown' || !incomingProfile.gender) ? 'Male' : incomingProfile.gender,
@@ -2451,7 +2477,7 @@ export default function App() {
       } else if (localProfile && Object.keys(localProfile).length > 0) {
         // Cloud doc is empty, but we have local data! Cloud save probably failed earlier.
         // Let's assume local is the source of truth and restore it.
-        setProfile(localProfile);
+        setProfile(sanitizeProfile(localProfile, activeEmail));
         setFoodLogs(localFoods);
         setBiomarkerHistory(localBioHistory);
         setActions(localActions);
@@ -2491,15 +2517,15 @@ export default function App() {
         completeInteraction(syncRootId, true, 0);
       } else {
         // Brand new sign up - create profile in Firestore
-        const isDemoUser = auth.currentUser?.email?.toLowerCase() === 'john@mail.com';
+        const isDemoUser = auth.currentUser?.email?.toLowerCase() === 'demo@healthcockpit.com';
         
         const newProfile: UserProfile = {
-          nickname: isDemoUser ? 'John Doe' : '',
-          photoUrl: auth.currentUser?.photoURL || (isDemoUser ? 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&q=80&w=120' : ''),
+          nickname: isDemoUser ? 'Alex (Demo)' : '',
+          photoUrl: auth.currentUser?.photoURL || (isDemoUser ? 'https://images.unsplash.com/photo-1539571696357-5a69c17a67c6?auto=format&fit=crop&q=80&w=120' : ''),
           email: auth.currentUser?.email || '',
-          age: isDemoUser ? 35 : '' as any,
+          age: isDemoUser ? 28 : '' as any,
           ethnicity: isDemoUser ? 'Caucasian' : 'Unknown',
-          weight: isDemoUser ? 75 : '' as any,
+          weight: isDemoUser ? 74 : '' as any,
           height: isDemoUser ? 178 : '' as any,
           gender: isDemoUser ? 'Male' : 'Unknown',
           timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
@@ -2674,6 +2700,16 @@ export default function App() {
 
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
       clearTimeout(fallbackTimeout);
+      const emailLower = user?.email?.toLowerCase().trim() || '';
+      if (emailLower.includes('john@mail.com') || emailLower.includes('john@gmail.com')) {
+        try {
+          await fbSignOut(auth);
+        } catch (e) {}
+        localStorage.removeItem('last_active_email');
+        setProfile(null);
+        setIsAuthChecking(false);
+        return;
+      }
       if (user && user.email) { runCleanupMigration(user.uid, user.email).catch(console.error); }
       unsubs.forEach(u => u());
       unsubs = [];

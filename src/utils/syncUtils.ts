@@ -886,6 +886,7 @@ export function mergeProfiles(cloudProfile: UserProfile | null, localProfile: Us
       'targets', 'generalNutrientTargets', 'weeklyTargets', 'weeklyNutrientTargets', 'topWeeklyNutrientTargets',
       'customGroupings', 'groupingDescriptions', 'categoryDescriptions'
     ]),
+    email: localProfile?.email || primary.email || cloudProfile?.email || '',
     customBiomarkers,
     deletedFoodLogIds,
     deletedBiomarkerLogIds,

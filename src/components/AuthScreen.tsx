@@ -177,11 +177,14 @@ export default function AuthScreen({ onLogin }: AuthScreenProps) {
     // Bypass check for admin/testing credentials
     const cleanEmail = email.trim().toLowerCase();
     if (cleanEmail === 'cwah.liu@gmail.com' && password === 'Admin135$,') {
+      try {
+        await fbSignOut(auth);
+      } catch (e) {}
       localStorage.setItem('last_active_email', cleanEmail);
       const simulatedAdminUser: UserProfile = {
         uid: 'admin_cwah_liu_gmail_com',
-        nickname: 'Chiwah (Admin)',
-        photoUrl: 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&q=80&w=120',
+        nickname: 'C. Liu',
+        photoUrl: '',
         email: 'cwah.liu@gmail.com',
         age: 28,
         ethnicity: 'Chinese',
