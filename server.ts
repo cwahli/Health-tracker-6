@@ -1595,11 +1595,29 @@ app.post('/api/jobs/upsert', async (req, res) => {
 
 app.post('/api/jobs/submit', async (req, res) => {
   try {
-    const { jobId, userId, kind, mode, text, images, imageUrls } = req.body;
+    const { jobId, userId, kind, mode, text, images, imageUrls, history, userProfile, engine, biomarkersNeedingImprovement, remainingAllowance, activeMeal, foodLogs, userSelectedMode, activeScoutItems } = req.body;
     if (!jobId) {
       return res.status(400).json({ error: 'jobId is required' });
     }
-    await submitServerJob({ jobId, userId, kind, mode, text, images, imageUrls });
+    await submitServerJob({
+      ...req.body,
+      jobId,
+      userId: userId || 'anonymous',
+      kind,
+      mode,
+      text,
+      images,
+      imageUrls,
+      history,
+      userProfile,
+      engine,
+      biomarkersNeedingImprovement,
+      remainingAllowance,
+      activeMeal,
+      foodLogs,
+      userSelectedMode,
+      activeScoutItems
+    });
     res.json({ success: true, jobId, status: 'queued' });
   } catch (err: any) {
     res.status(500).json({ error: err.message || 'Failed to submit job to cloud' });
@@ -1620,6 +1638,7 @@ app.get('/api/jobs/status', async (req, res) => {
     let query = supabaseAdmin.from('agent_jobs').select('*');
     if (jobId) query = query.eq('id', String(jobId));
     if (userId) query = query.eq('user_id', String(userId));
+    query = query.order('updated_at', { ascending: false }).limit(20);
     const { data, error } = await query;
     if (error) throw error;
     res.json({ jobs: data || [] });

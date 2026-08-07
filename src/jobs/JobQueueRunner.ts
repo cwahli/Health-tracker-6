@@ -105,8 +105,11 @@ class JobQueueRunnerImpl {
       let photoUrl: string | undefined = updatedJob.result?.photoUrl;
       let debugUrl: string | undefined = updatedJob.result?.debugUrl;
 
-      // Skip client double R2 upload if server-owned job or photoUrl/debugUrl already present
+      // Skip client double R2 upload & client upsert if server-owned job
       const isServerOwned = (job.kind === 'food_log' || job.kind === 'food_compare') && (photoUrl || debugUrl || updatedJob.result?.pendingFoodLog);
+      if (isServerOwned) {
+        return;
+      }
 
       try {
         if (!photoUrl && !isServerOwned) {

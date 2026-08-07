@@ -987,7 +987,7 @@ export default function App() {
               pollAttempts++;
 
               try {
-                const statusRes = await fetch(`/api/jobs/status?jobId=${job.id}`);
+                const statusRes = await fetch(`/api/jobs/status?jobId=${job.id}&userId=${auth.currentUser?.uid || 'anonymous'}`);
                 if (!statusRes.ok) throw new Error(`HTTP error ${statusRes.status}`);
                 const { jobs } = await statusRes.json();
                 const serverJob = jobs && jobs[0];

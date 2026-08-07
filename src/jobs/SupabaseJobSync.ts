@@ -3,29 +3,32 @@ import { JobStore } from './JobStore';
 import { AgentJob } from './types';
 
 export async function hydrateUserJobs(userId: string = 'anonymous'): Promise<void> {
-  if (!isSupabaseConfigured) return;
   try {
-    const { data: rows, error } = await supabase
-      .from('agent_jobs')
-      .select('*')
-      .eq('user_id', userId)
-      .order('updated_at', { ascending: false })
-      .limit(20);
-
-    if (error || !rows) return;
+    const res = await fetch(`/api/jobs/status?userId=${encodeURIComponent(userId)}`);
+    if (!res.ok) return;
+    const { jobs: rows } = await res.json();
+    if (!rows || !Array.isArray(rows)) return;
 
     for (const row of rows) {
       const existing = JobStore.getJob(row.id);
+      const cleanRes = row.clean_result || undefined;
+      const photoUrl = row.photo_url || cleanRes?.photoUrl;
+      const debugUrl = row.debug_url || cleanRes?.debugUrl;
+      if (cleanRes) {
+        if (photoUrl) cleanRes.photoUrl = photoUrl;
+        if (debugUrl) cleanRes.debugUrl = debugUrl;
+      }
+
       if (!existing) {
         JobStore.createJob({
           id: row.id,
-          kind: row.kind || 'food',
+          kind: row.kind || 'food_log',
           mode: row.mode || 'review',
           status: row.status,
           progressPercent: row.progress_percent || 0,
           statusMessage: row.status_message || '',
           messages: [],
-          result: row.clean_result || undefined,
+          result: cleanRes,
           createdAt: row.created_at ? new Date(row.created_at).getTime() : Date.now(),
         } as any);
       } else {
@@ -33,7 +36,7 @@ export async function hydrateUserJobs(userId: string = 'anonymous'): Promise<voi
           status: row.status,
           progressPercent: row.progress_percent,
           statusMessage: row.status_message,
-          result: row.clean_result || existing.result
+          result: cleanRes || existing.result
         });
       }
     }

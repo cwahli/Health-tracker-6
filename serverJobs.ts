@@ -94,7 +94,7 @@ export async function submitServerJob(payload: ServerJobPayload): Promise<void> 
         activeScoutItems: payload.activeScoutItems || []
       };
 
-      // In-process server background job worker for Cloud Run execution
+      // Server background job worker invocation via loopback (Note: Cloud Run must use CPU always allocated)
       const response = await fetch(`${baseUrl}/api/gemini/food-analyze?stream=true`, {
         method: 'POST',
         headers: {
