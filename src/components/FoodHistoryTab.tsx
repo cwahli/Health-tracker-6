@@ -385,7 +385,7 @@ export default function FoodHistoryTab({
       .map(job => ({
         type: 'job' as const,
         id: job.id,
-        date: job.createdAt.split('T')[0],
+        date: (typeof job.createdAt === 'string' ? job.createdAt : new Date(job.createdAt || Date.now()).toISOString()).split('T')[0],
         createdAt: job.createdAt,
         data: job
       }));

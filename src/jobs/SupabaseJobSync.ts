@@ -29,7 +29,7 @@ export async function hydrateUserJobs(userId: string = 'anonymous'): Promise<voi
           statusMessage: row.status_message || '',
           messages: [],
           result: cleanRes,
-          createdAt: row.created_at ? new Date(row.created_at).getTime() : Date.now(),
+          createdAt: row.created_at ? new Date(row.created_at).toISOString() : new Date().toISOString(),
         } as any);
       } else {
         JobStore.updateJob(row.id, {
@@ -99,7 +99,7 @@ export function initSupabaseJobSync(userId?: string): () => void {
             statusMessage: row.status_message || '',
             messages: [],
             result: row.clean_result || undefined,
-            createdAt: row.created_at ? new Date(row.created_at).getTime() : Date.now(),
+            createdAt: row.created_at ? new Date(row.created_at).toISOString() : new Date().toISOString(),
           } as any);
         }
       }

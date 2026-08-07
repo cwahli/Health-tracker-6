@@ -115,6 +115,30 @@ export async function fetchOFFProductByBarcode(barcode: string): Promise<any | n
   }
 }
 
+export function safeExtractJsonObject<T = any>(rawText: string): T | null {
+  if (!rawText) return null;
+  try { return JSON.parse(rawText); } catch {}
+
+  const matchFence = rawText.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+  if (matchFence?.[1]) {
+    try { return JSON.parse(matchFence[1]); } catch {}
+  }
+
+  const start = rawText.indexOf('{');
+  if (start === -1) return null;
+  let depth = 0;
+  for (let i = start; i < rawText.length; i++) {
+    if (rawText[i] === '{') depth++;
+    else if (rawText[i] === '}') {
+      depth--;
+      if (depth === 0) {
+        try { return JSON.parse(rawText.slice(start, i + 1)); } catch {}
+      }
+    }
+  }
+  return null;
+}
+
 export async function executeFoodResolverAgent(
   gaps: Array<{ query: string; candidates: Array<{ id: string; name: string; source: string }> }>,
   addDebugLog: (msg: string) => void,
@@ -222,10 +246,8 @@ export async function executeFoodResolverAgent(
 
   const results: Array<{ query: string; chosenFdcId: string | null; formTags?: string[]; dishCore?: Record<string, number> }> = [];
   try {
-    const jsonStart = responseText.indexOf('{');
-    const jsonEnd = responseText.lastIndexOf('}');
-    if (jsonStart !== -1 && jsonEnd !== -1) {
-      const parsed = JSON.parse(responseText.slice(jsonStart, jsonEnd + 1));
+    const parsed = safeExtractJsonObject<any>(responseText);
+    if (parsed) {
       const resolutions = Array.isArray(parsed.resolutions) ? parsed.resolutions : [];
 
       for (const res of resolutions) {
@@ -367,7 +389,7 @@ if (getApps().length === 0) {
     projectId: firebaseConfig?.projectId
   });
 }
-import { getAuth, getAuth as getAdminAuth } from 'firebase-admin/auth';
+import { getAuth as getAdminAuth } from 'firebase-admin/auth';
 const adminAuth = getAdminAuth();
 import express from "express";
 
@@ -742,10 +764,16 @@ async function searchOpenFoodFacts(query: string, maxResults: number = 5): Promi
 
 
 
-let ddgCallCountThisRequest = 0;
-let ddgBlockedThisRequest = false;
+export interface SearchRequestContext {
+  ddgCallCount: number;
+  ddgBlocked: boolean;
+}
 
-async function searchOnlineWebNutrition(query: string, chainKey?: string): Promise<any[]> {
+async function searchOnlineWebNutrition(
+  query: string, 
+  chainKey?: string, 
+  ctx: SearchRequestContext = { ddgCallCount: 0, ddgBlocked: false }
+): Promise<any[]> {
   try {
     if (!query || !query.trim()) return [];
     let isBlockedByBotProtection = false;
@@ -813,11 +841,11 @@ async function searchOnlineWebNutrition(query: string, chainKey?: string): Promi
 
     // DuckDuckGo Lite & HTML Multi-Selector Search Engine (Max 1 call per request limit)
     try {
-      if (ddgCallCountThisRequest >= 1 || ddgBlockedThisRequest) {
+      if (ctx.ddgCallCount >= 1 || ctx.ddgBlocked) {
         addDebugLog(`[DuckDuckGo Lite Engine] Skipped fetch for "${query}" (max 1 DDG call limit reached or blocked).`);
         return [];
       }
-      ddgCallCountThisRequest++;
+      ctx.ddgCallCount++;
 
       const searchBody = `q=${encodeURIComponent(query + " nutrition calories")}&kl=us-en`;
       const ddgLiteRes = await fetch("https://lite.duckduckgo.com/lite/", {
@@ -834,13 +862,13 @@ async function searchOnlineWebNutrition(query: string, chainKey?: string): Promi
 
       if (ddgLiteRes.status === 202) {
         isBlockedByBotProtection = true;
-        ddgBlockedThisRequest = true;
+        ctx.ddgBlocked = true;
         addDebugLog(`[DuckDuckGo Lite Engine] BLOCKED by DuckDuckGo anti-bot system (HTTP 202 CAPTCHA challenge) for "${query}".`);
       } else if (ddgLiteRes.ok) {
         const html = await ddgLiteRes.text();
         if (html.includes('anomaly.js') || html.includes('challenge-form') || html.includes('botnet')) {
           isBlockedByBotProtection = true;
-          ddgBlockedThisRequest = true;
+          ctx.ddgBlocked = true;
           addDebugLog(`[DuckDuckGo Lite Engine] BLOCKED by DuckDuckGo anomaly challenge script for "${query}".`);
         } else {
           const $ = cheerio.load(html);
@@ -2612,10 +2640,13 @@ app.get("/api/debug/live-stream", (req, res) => {
     }
   }, 15000);
 
-  req.on("close", () => {
+  const cleanupStream = () => {
     clearInterval(pingInterval);
     liveStreamClients.delete(res);
-  });
+  };
+  req.on("close", cleanupStream);
+  res.on("finish", cleanupStream);
+  res.on("error", cleanupStream);
 });
 
 app.get("/api/status", (req, res) => {
@@ -2632,9 +2663,9 @@ app.post("/api/sync/save", async (req, res) => {
     try {
       const decoded = await adminAuth.verifyIdToken(idToken);
       const decodedToken = decoded;
-      const userRecord = await getAuth().getUser(decodedToken.uid);
+      const userRecord = await adminAuth.getUser(decodedToken.uid);
       if (!userRecord.customClaims?.role || userRecord.customClaims.role !== 'authenticated') {
-        await getAuth().setCustomUserClaims(decodedToken.uid, { ...userRecord.customClaims, role: 'authenticated' });
+        await adminAuth.setCustomUserClaims(decodedToken.uid, { ...userRecord.customClaims, role: 'authenticated' });
       }
       if (decoded.email?.toLowerCase() !== (req.body.email || '').toLowerCase()) {
         return res.status(403).json({ error: 'Forbidden: email mismatch' });
@@ -3757,6 +3788,7 @@ app.post("/api/gemini/food-analyze", async (req, res) => {
   let hasSentHeaders = false;
   const sessionId = logSessionStorage.getStore() || "global";
   const initialLogCount = (sessionDebugLogs[sessionId] || globalDebugLogs).length;
+  const searchCtx: SearchRequestContext = { ddgCallCount: 0, ddgBlocked: false };
 
   if (isStream) {
     res.setHeader('Content-Type', 'text/event-stream');
@@ -4587,7 +4619,7 @@ app.post("/api/gemini/food-analyze", async (req, res) => {
             
           const isBrandOrChainQuery = !!detectChainKeyFromText(q);
           const shouldRunWebSearch = isMainItemQuery && (webSearchQuerySet.has(q) || isBrandOrChainQuery);
-          const webP = shouldRunWebSearch ? searchOnlineWebNutrition(q, detectedChainKey) : Promise.resolve([]);
+          const webP = shouldRunWebSearch ? searchOnlineWebNutrition(q, detectedChainKey, searchCtx) : Promise.resolve([]);
           const brandP = searchBrandMenuItems(cleaned, detectedChainKey);
 
           const [usda, off, brandHits, web] = await Promise.all([
