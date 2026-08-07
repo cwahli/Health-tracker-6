@@ -1612,11 +1612,12 @@ app.get('/api/jobs/status', async (req, res) => {
     if (!jobId && !userId) {
       return res.status(400).json({ error: 'jobId or userId is required' });
     }
-    const { supabase, isSupabaseConfigured } = await import('./src/utils/supabaseClient');
+    const { isSupabaseConfigured } = await import('./src/utils/supabaseClient');
     if (!isSupabaseConfigured) {
       return res.json({ jobs: [] });
     }
-    let query = supabase.from('agent_jobs').select('*');
+    const { supabaseAdmin } = await import('./supabaseAdmin');
+    let query = supabaseAdmin.from('agent_jobs').select('*');
     if (jobId) query = query.eq('id', String(jobId));
     if (userId) query = query.eq('user_id', String(userId));
     const { data, error } = await query;

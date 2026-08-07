@@ -76,7 +76,9 @@ export async function submitServerJob(payload: ServerJobPayload): Promise<void> 
 
       await updateSupabaseProgress(15, 'Vision Scout starting...');
 
-      // Prepare request body for loopback
+      // Prepare request body for loopback / in-process execution
+      const port = process.env.PORT || 3000;
+      const baseUrl = process.env.INTERNAL_BASE_URL || `http://127.0.0.1:${port}`;
       const bodyData = {
         message: text || '',
         images: images,
@@ -92,7 +94,8 @@ export async function submitServerJob(payload: ServerJobPayload): Promise<void> 
         activeScoutItems: payload.activeScoutItems || []
       };
 
-      const response = await fetch('http://127.0.0.1:3000/api/gemini/food-analyze?stream=true', {
+      // In-process server background job worker for Cloud Run execution
+      const response = await fetch(`${baseUrl}/api/gemini/food-analyze?stream=true`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

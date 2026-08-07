@@ -2294,9 +2294,17 @@ ${logsText}`);
           })
           .catch(err => {
             console.error('[LogChat] Server submit failed:', err);
+            JobStore.updateJob(currentJobId, {
+              status: 'failed',
+              statusMessage: 'Submission Failed: ' + (err.message || 'Server error')
+            });
           });
         }).catch(err => {
           console.error('[LogChat] Error converting images:', err);
+          JobStore.updateJob(currentJobId, {
+            status: 'failed',
+            statusMessage: 'Submission Failed: Image conversion error'
+          });
         });
 
         // Wake queue runner & notify parent

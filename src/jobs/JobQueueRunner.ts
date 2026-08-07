@@ -105,12 +105,17 @@ class JobQueueRunnerImpl {
       let photoUrl: string | undefined = updatedJob.result?.photoUrl;
       let debugUrl: string | undefined = updatedJob.result?.debugUrl;
 
+      // Skip client double R2 upload if server-owned job or photoUrl/debugUrl already present
+      const isServerOwned = (job.kind === 'food_log' || job.kind === 'food_compare') && (photoUrl || debugUrl || updatedJob.result?.pendingFoodLog);
+
       try {
-        const images = await ImageStore.getImages(job.id);
-        if (images && images.length > 0) {
-          const firstImg = typeof images[0] === 'string' ? images[0] : '';
-          if (firstImg) {
-            photoUrl = await uploadPhotoToR2(job.id, firstImg);
+        if (!photoUrl && !isServerOwned) {
+          const images = await ImageStore.getImages(job.id);
+          if (images && images.length > 0) {
+            const firstImg = typeof images[0] === 'string' ? images[0] : '';
+            if (firstImg) {
+              photoUrl = await uploadPhotoToR2(job.id, firstImg);
+            }
           }
         }
 
