@@ -2935,7 +2935,7 @@ ${logsText}`);
         }
       }
 
-      const revIdx = [...messages].reverse().findIndex(m => m.id.startsWith('welcome_'));
+      const revIdx = [...messages].reverse().findIndex(m => m.id?.startsWith('welcome_'));
       const lastWelcomeIndex = revIdx >= 0 ? messages.length - 1 - revIdx : -1;
       const activeSessionIdx = lastWelcomeIndex >= 0 ? lastWelcomeIndex : 0;
       
@@ -2945,7 +2945,7 @@ ${logsText}`);
         image: tempAnalysisImages[0] || tempImages[0] || undefined,
         images: tempAnalysisImages.length > 0 ? tempAnalysisImages : (tempImages.length > 0 ? tempImages : undefined),
         imageDates: tempDates.length > 0 ? tempDates : undefined,
-        history: messages.slice(activeSessionIdx).filter(m => !m.id.startsWith('welcome_')).map(m => {
+        history: messages.slice(activeSessionIdx).filter(m => !m.id?.startsWith('welcome_')).map(m => {
           let extra = "";
           if (m.role === 'assistant') {
             if (m.data?.pendingBiomarkers) extra += `
@@ -4398,11 +4398,12 @@ ${logsText}`);
     let resolvedImageUrls = log.imageUrls;
 
     if (log.imageUrl) {
-      const primaryId = log.imageUrl.startsWith('ref:') ? log.imageUrl.replace('ref:', '') : log.id;
+      const primaryId = (typeof log.imageUrl === 'string' && log.imageUrl.startsWith('ref:')) ? log.imageUrl.replace('ref:', '') : log.id;
       resolvedImageUrl = `ref:${primaryId}`;
     }
     if (log.imageUrls && log.imageUrls.length > 0) {
-      const primaryId = log.imageUrls[0].startsWith('ref:') ? log.imageUrls[0].replace('ref:', '') : log.id;
+      const firstImg = log.imageUrls[0];
+      const primaryId = (typeof firstImg === 'string' && firstImg.startsWith('ref:')) ? firstImg.replace('ref:', '') : log.id;
       resolvedImageUrls = [`ref:${primaryId}`];
     }
 
@@ -5073,7 +5074,7 @@ ${JSON.stringify(profile, null, 2)}`);
           )}
 
           {(() => {
-            const revIdx = [...messages].reverse().findIndex(m => m.id.startsWith('welcome_'));
+            const revIdx = [...messages].reverse().findIndex(m => m.id?.startsWith('welcome_'));
             const lastWelcomeIndex = revIdx >= 0 ? messages.length - 1 - revIdx : -1;
             const sessionStartIdx = lastWelcomeIndex >= 0 ? lastWelcomeIndex : 0;
             const pastCount = sessionStartIdx;
@@ -5127,7 +5128,7 @@ ${JSON.stringify(profile, null, 2)}`);
                   id={isLastFoodMsg ? "last-food-message" : undefined}
                   className="w-full space-y-2.5 px-1 min-w-0 relative group"
                 >
-                  {!msg.id.startsWith('welcome_') && (
+                  {!msg.id?.startsWith('welcome_') && (
                     <div className="absolute right-2 top-0 flex items-center gap-1 sm:opacity-0 sm:group-hover:opacity-100 opacity-100 z-20">
                       {msg.role === 'assistant' && (
                         <button
@@ -5309,7 +5310,7 @@ ${JSON.stringify(profile, null, 2)}`);
 
                   {/* Render extracted Pending Food Log info */}
                   {(() => {
-                    const rendererType = msg.id.startsWith('welcome_') ? 'welcome' : msg.agentType;
+                    const rendererType = msg.id?.startsWith('welcome_') ? 'welcome' : msg.agentType;
                     const Renderer = rendererType ? agentCardRegistry[rendererType] : null;
                     if (!Renderer) return null;
                     return (

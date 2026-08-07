@@ -14,13 +14,13 @@ export function resolveFoodImage(img: string | undefined | null, foodLogs: FoodL
   if (primaryLog) {
     const baseImg = primaryLog.imageUrl || primaryLog.imageUrls?.[0];
     if (baseImg) {
-      if (!baseImg.startsWith('ref:')) {
+      if (typeof baseImg === 'string' && !baseImg.startsWith('ref:')) {
         return baseImg;
-      } else {
+      } else if (typeof baseImg === 'string') {
         const nextId = baseImg.replace('ref:', '');
         const nextLog = foodLogs.find(f => f.id === nextId);
         const nextImg = nextLog?.imageUrl || nextLog?.imageUrls?.[0];
-        if (nextImg && !nextImg.startsWith('ref:')) {
+        if (typeof nextImg === 'string' && !nextImg.startsWith('ref:')) {
           return nextImg;
         }
       }

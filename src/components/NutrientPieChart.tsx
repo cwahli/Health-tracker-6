@@ -23,7 +23,7 @@ export const NutrientPieChart: React.FC<NutrientPieChartProps> = ({
 
   // Map nutrient keys to colors using master getNutrientColor
   const highlightColor = getNutrientColor(nutrientKey || '');
-  const consumedColor = highlightColor.startsWith('rgb(') && highlightColor.endsWith(')')
+  const consumedColor = typeof highlightColor === 'string' && highlightColor.startsWith('rgb(') && highlightColor.endsWith(')')
     ? highlightColor.replace('rgb(', 'rgba(').replace(')', ', 0.2)')
     : highlightColor;
 

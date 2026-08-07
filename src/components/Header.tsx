@@ -528,7 +528,7 @@ export default function Header({
       if (!sectionLabel) sectionLabel = 'Other colours';
       if (!colours[sectionLabel]) colours[sectionLabel] = {};
       const value = palette[c.key] !== undefined ? palette[c.key] : c.defaultHex;
-      const displayName = c.key.startsWith('custom_') ? `${c.label} (custom)` : c.label;
+      const displayName = c.key?.startsWith('custom_') ? `${c.label} (custom)` : c.label;
       colours[sectionLabel][displayName] = value;
     });
 
@@ -538,7 +538,7 @@ export default function Header({
       const currentOption = (f.options || []).find((o: any) => o.value === currentVal);
       const scale: Record<string, string> = {};
       (f.options || []).forEach((o: any) => { scale[o.value] = o.label; });
-      const displayName = f.key.startsWith('custom_') ? `${f.label} (custom)` : f.label;
+      const displayName = f.key?.startsWith('custom_') ? `${f.label} (custom)` : f.label;
       fonts[displayName] = {
         current: currentOption ? currentOption.label : currentVal,
         scale
@@ -2163,7 +2163,7 @@ export default function Header({
                                   >
                                     Cancel
                                   </button>
-                                  {color.key.startsWith('custom_') && (
+                                  {color.key?.startsWith('custom_') && (
                                     <button
                                       type="button"
                                       onClick={(e) => {
@@ -2379,7 +2379,7 @@ export default function Header({
                                   >
                                     Cancel
                                   </button>
-                                  {color.key.startsWith('custom_') && (
+                                  {color.key?.startsWith('custom_') && (
                                     <button
                                       type="button"
                                       onClick={(e) => {
