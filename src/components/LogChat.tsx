@@ -2552,9 +2552,17 @@ ${logsText}`);
           onJobEnqueued(currentJobId, 'food');
         }
 
+        // Release the double-tap guard now that the job is queued — the actual
+        // analysis runs in the background via JobStore/JobQueueRunner, so the
+        // user should be free to log another item immediately.
+        clearTimeout(failsafe);
+        isSendingRef.current = false;
+
         onClose();
       } catch (err: any) {
         console.error('Failed to enqueue food job:', err);
+        clearTimeout(failsafe);
+        isSendingRef.current = false;
         const errorMsg: ChatMessage = {
           id: `msg_err_${Date.now()}`,
           role: 'assistant',
