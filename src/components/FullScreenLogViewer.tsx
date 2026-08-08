@@ -282,6 +282,13 @@ export const AGENT_COLOR_MAP: Record<string, {
     dotColor: 'bg-rose-400',
     name: 'Database & Extraction'
   },
+  bug_snapshot: {
+    textColor: 'text-purple-300 dark:text-purple-300',
+    borderColor: 'border-purple-500/40',
+    bgBadge: 'bg-purple-950/70 text-purple-300 border-purple-500/40',
+    dotColor: 'bg-purple-400',
+    name: 'Bug Snapshot & Triage'
+  },
   system: {
     textColor: 'text-slate-300 dark:text-slate-300',
     borderColor: 'border-slate-700/40',
@@ -317,6 +324,15 @@ export function getChunkAgentId(chunk: string): string {
   const lower = chunk.toLowerCase();
 
   if (
+    lower.includes('[bugsnapshot]') ||
+    lower.includes('[bugtriage]') ||
+    lower.includes('[bug_snapshot]') ||
+    lower.includes('[bug_triage]')
+  ) {
+    return 'bug_snapshot';
+  }
+
+  if (
     lower.includes('food_resolver') ||
     lower.includes('food resolver') ||
     lower.includes('unifiedllm:food_resolver') ||
@@ -333,6 +349,7 @@ export function getChunkAgentId(chunk: string): string {
      if (tag.includes('_instruction')) tag = tag.split('_instruction')[0].trim();
      if (tag.includes('_answer')) tag = tag.split('_answer')[0].trim();
 
+     if (tag.includes('bugsnapshot') || tag.includes('bug_snapshot') || tag.includes('bugtriage') || tag.includes('bug_triage')) return 'bug_snapshot';
      if (tag.includes('error') || tag.includes('fail') || tag.includes('timeout')) return 'error';
      if (tag.includes('food_resolver')) return 'food_resolver_ai';
      if (tag.includes('scout') || tag.includes('vision')) return 'scout_ai';
@@ -346,7 +363,7 @@ export function getChunkAgentId(chunk: string): string {
   if (lower.includes('error:') || lower.includes('failed to') || lower.includes('timeout')) return 'error';
   if ((lower.includes('scout') || lower.includes('vision scout')) && !lower.includes('food_resolver')) return 'scout_ai';
   if ((lower.includes('dietitian') || lower.includes('food')) && !lower.includes('food_resolver')) return 'dietitian_ai';
-if (lower.includes('health_coach') || lower.includes('health coach')) return 'health_coach';
+  if (lower.includes('health_coach') || lower.includes('health coach')) return 'health_coach';
   if (lower.includes('medical') || lower.includes('biomarker')) return 'medical_ai';
   if (lower.includes('db_') || lower.includes('database search') || lower.includes('nutrient')) return 'database';
   if (lower.includes('system') || lower.includes('status')) return 'system';
@@ -747,6 +764,7 @@ export default function FullScreenLogViewer({
   const agentLogs = useMemo(() => {
     const logsMap: Record<string, string[]> = {};
     const categoryDefs: Record<string, { id: string; name: string; shortLabel: string }> = {
+      'bug_snapshot': { id: 'bug_snapshot', name: 'Bug Snapshot & Triage', shortLabel: 'Bug Tracker' },
       'health_coach': { id: 'health_coach', name: 'Health Coach', shortLabel: 'Coach' },
       'scout_ai': { id: 'scout_ai', name: 'Scout AI', shortLabel: 'Scout' },
       'food_resolver': { id: 'food_resolver', name: 'Food Resolver AI', shortLabel: 'Resolver' },
@@ -794,7 +812,8 @@ export default function FullScreenLogViewer({
       if (headerMatch) {
          tagsString = headerMatch[1].toLowerCase();
          
-         if (tagsString.includes('error') || tagsString.includes('fail') || tagsString.includes('timeout')) assignedBucket = 'error';
+         if (tagsString.includes('bugsnapshot') || tagsString.includes('bug_snapshot') || tagsString.includes('bugtriage') || tagsString.includes('bug_triage')) assignedBucket = 'bug_snapshot';
+         else if (tagsString.includes('error') || tagsString.includes('fail') || tagsString.includes('timeout')) assignedBucket = 'error';
          else if (tagsString.includes('food_resolver') || tagsString.includes('food resolver')) assignedBucket = 'food_resolver_ai';
          else if (tagsString.includes('scout') || tagsString.includes('vision')) assignedBucket = 'scout_ai';
          else if (tagsString.includes('dietitian') || (tagsString.includes('food') && !tagsString.includes('food_resolver'))) assignedBucket = 'dietitian_ai';
@@ -807,7 +826,8 @@ export default function FullScreenLogViewer({
       if (!assignedBucket) {
          // Fallback to checking just the first line to avoid matching inside giant JSON payloads
          const firstLine = chunk.split('\n')[0].toLowerCase();
-         if (firstLine.includes('error:') || firstLine.includes('failed to') || firstLine.includes('timeout')) assignedBucket = 'error';
+         if (firstLine.includes('bugsnapshot') || firstLine.includes('bug_snapshot') || firstLine.includes('bugtriage') || firstLine.includes('bug_triage')) assignedBucket = 'bug_snapshot';
+         else if (firstLine.includes('error:') || firstLine.includes('failed to') || firstLine.includes('timeout')) assignedBucket = 'error';
          else if (firstLine.includes('food_resolver') || firstLine.includes('food resolver')) assignedBucket = 'food_resolver_ai';
          else if (firstLine.includes('scout') || firstLine.includes('vision scout')) assignedBucket = 'scout_ai';
          else if (firstLine.includes('dietitian') || (firstLine.includes('food') && !firstLine.includes('food_resolver'))) assignedBucket = 'dietitian_ai';

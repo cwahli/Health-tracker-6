@@ -1,23 +1,46 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { ImageIcon, X, ChevronLeft, ChevronRight } from 'lucide-react';
+import {
+  normalizeMealImageUrl,
+  nextPhotoFallbackUrl,
+  photoKeyFromUrl,
+} from '../utils/foodImageSources';
 
 interface ImageSliderProps {
   images?: string[];
   singleImage?: string;
   altText: string;
+  /** B13: if true, do not load network src until near viewport */
+  deferUntilVisible?: boolean;
 }
 
-export default function ImageSlider({ images = [], singleImage, altText }: ImageSliderProps) {
-  const allImages = (Array.isArray(images) ? [...images] : [])
-    .filter(img => typeof img === 'string' && img.trim().length > 0 && img !== 'Image reference preserved' && img !== '[image_removed_for_snapshot]' && !img.includes('Image reference preserved'));
-  
-  if (singleImage && typeof singleImage === 'string' && singleImage.trim().length > 0 && singleImage !== 'Image reference preserved' && singleImage !== '[image_removed_for_snapshot]' && !allImages.includes(singleImage)) {
-    allImages.unshift(singleImage);
+export default function ImageSlider({
+  images = [],
+  singleImage,
+  altText,
+  deferUntilVisible = true,
+}: ImageSliderProps) {
+  const rawList = (Array.isArray(images) ? [...images] : []);
+  if (singleImage && typeof singleImage === 'string' && !rawList.includes(singleImage)) {
+    rawList.unshift(singleImage);
   }
+  const allImages = useMemo(
+    () =>
+      rawList
+        .map((img) => normalizeMealImageUrl(img))
+        .filter((img): img is string => typeof img === 'string' && img.trim().length > 0),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [JSON.stringify(rawList)]
+  );
 
   const [orientations, setOrientations] = useState<Record<string, 'portrait' | 'landscape'>>({});
   const [brokenImages, setBrokenImages] = useState<Record<string, boolean>>({});
+  /** B11d: remapped src after private R2 401 */
+  const [srcMap, setSrcMap] = useState<Record<string, string>>({});
+  const triedFallbacks = useRef<Record<string, Set<string>>>({});
   const [activeIndex, setActiveIndex] = useState(0);
+  const [inView, setInView] = useState(!deferUntilVisible);
+  const rootRef = useRef<HTMLDivElement>(null);
   
   // Full screen viewer states
   const [viewerIndex, setViewerIndex] = useState<number | null>(null);
@@ -102,9 +125,35 @@ export default function ImageSlider({ images = [], singleImage, altText }: Image
     viewerScrollContainerRef.current.scrollLeft = viewerScrollLeftRef.current - walk;
   };
 
+  // B13: only decode / network-fetch when near viewport
   useEffect(() => {
+    if (!deferUntilVisible) {
+      setInView(true);
+      return;
+    }
+    const el = rootRef.current;
+    if (!el || typeof IntersectionObserver === 'undefined') {
+      setInView(true);
+      return;
+    }
+    const io = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((e) => e.isIntersecting)) {
+          setInView(true);
+          io.disconnect();
+        }
+      },
+      { rootMargin: '120px 0px', threshold: 0.01 }
+    );
+    io.observe(el);
+    return () => io.disconnect();
+  }, [deferUntilVisible]);
+
+  useEffect(() => {
+    if (!inView) return;
     allImages.forEach((img) => {
       if (!img || orientations[img]) return;
+      const display = srcMap[img] || img;
       const imgObj = new Image();
       imgObj.onload = () => {
         const isPortrait = imgObj.naturalHeight > imgObj.naturalWidth;
@@ -113,16 +162,42 @@ export default function ImageSlider({ images = [], singleImage, altText }: Image
           [img]: isPortrait ? 'portrait' : 'landscape',
         }));
       };
-      imgObj.src = img;
+      imgObj.src = display;
     });
-  }, [allImages]);
+  }, [allImages, inView, srcMap]);
 
-  const handleImageError = (img: string) => {
+  const handleImageError = async (original: string) => {
+    const current = srcMap[original] || original;
+    if (!triedFallbacks.current[original]) triedFallbacks.current[original] = new Set();
+    const tried = triedFallbacks.current[original];
+    tried.add(current);
+
+    // B11d: try proxy / signed resolve
+    let next = nextPhotoFallbackUrl(current, tried);
+    if (next?.includes('/api/r2/photo-url')) {
+      try {
+        const key = photoKeyFromUrl(current) || photoKeyFromUrl(original);
+        const res = await fetch(`/api/r2/photo-url?key=${encodeURIComponent(key || '')}`);
+        if (res.ok) {
+          const json = await res.json();
+          next = json.proxyUrl || json.url || next;
+        }
+      } catch {
+        /* keep next */
+      }
+    }
+    if (next && !tried.has(next)) {
+      tried.add(next);
+      setSrcMap((prev) => ({ ...prev, [original]: next! }));
+      return;
+    }
     setBrokenImages((prev) => ({
       ...prev,
-      [img]: true,
+      [original]: true,
     }));
   };
+
+  const displaySrc = (img: string) => (inView ? srcMap[img] || img : undefined);
 
   // Scroll smooth to fullscreen slide index
   const scrollViewerToSlide = (index: number, behavior: 'smooth' | 'auto' = 'smooth') => {
@@ -283,7 +358,7 @@ export default function ImageSlider({ images = [], singleImage, altText }: Image
   }
 
   return (
-    <div className="w-full relative group">
+    <div className="w-full relative group" ref={rootRef}>
       {/* Scrollable Container with Smooth Scroll Snap */}
       <div 
         ref={scrollContainerRef}
@@ -298,6 +373,7 @@ export default function ImageSlider({ images = [], singleImage, altText }: Image
           const orientation = orientations[img] || 'landscape';
           const isPortrait = orientation === 'portrait';
           const isBroken = brokenImages[img];
+          const src = displaySrc(img);
 
           return (
             <div
@@ -318,19 +394,25 @@ export default function ImageSlider({ images = [], singleImage, altText }: Image
               }`}
             >
               {isBroken ? (
-                <div className="w-full h-full flex flex-col items-center justify-center text-slate-400 bg-slate-100 dark:bg-slate-950 p-4 text-center">
-                  <ImageIcon className="w-6 h-6 mb-1 text-rose-400 dark:text-rose-500 opacity-80" />
-                  <span className="text-[9px] font-medium leading-tight">Image format unsupported<br/>or file corrupted</span>
+                <div className="w-full h-full flex flex-col items-center justify-center text-slate-400 bg-slate-50 dark:bg-slate-900/50 p-4 text-center">
+                  <ImageIcon className="w-6 h-6 mb-1 text-slate-400 dark:text-slate-500 opacity-60" />
+                  <span className="text-[10px] font-medium text-slate-400 dark:text-slate-500 leading-tight">Photo unavailable</span>
                 </div>
-              ) : (
+              ) : src ? (
                 <img
-                  src={img}
+                  src={src}
                   alt={`${altText} - image ${idx + 1}`}
                   draggable={false}
+                  loading="lazy"
+                  decoding="async"
                   className="w-full h-full object-cover select-none hover:scale-105 transition-transform duration-300"
                   referrerPolicy="no-referrer"
                   onError={() => handleImageError(img)}
                 />
+              ) : (
+                <div className="w-full h-full flex items-center justify-center text-slate-300 dark:text-slate-600 text-[10px]">
+                  …
+                </div>
               )}
             </div>
           );
@@ -434,10 +516,11 @@ export default function ImageSlider({ images = [], singleImage, altText }: Image
                   onClick={() => setViewerIndex(null)}
                 >
                   <img
-                    src={img}
+                    src={srcMap[img] || img}
                     alt={`${altText} - full size ${idx + 1}`}
                     className="max-w-full max-h-[75vh] object-contain rounded-lg shadow-2xl pointer-events-none select-none"
                     referrerPolicy="no-referrer"
+                    onError={() => handleImageError(img)}
                   />
                 </div>
               ))}
@@ -468,7 +551,3 @@ export default function ImageSlider({ images = [], singleImage, altText }: Image
     </div>
   );
 }
-
-/* nextPhotoFallbackUrl handleImageError deferUntilVisible IntersectionObserver */
-
-/* loading="lazy" */

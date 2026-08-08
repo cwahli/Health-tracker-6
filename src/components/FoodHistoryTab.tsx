@@ -8,9 +8,13 @@ import { formatNutrientDisplayValue } from '../utils/nutrients';
 import { db, auth } from '../firebase';
 import { doc, getDoc, setDoc } from 'firebase/firestore';
 import { compressMultipleImages } from '../utils/imageCompressor';
-import { getCurrentDateInTimezone } from '../utils/dateUtils';
+import { getCurrentDateInTimezone, toYYYYMMDD } from '../utils/dateUtils';
 import ImageSlider from './ImageSlider';
 import { resolveFoodImage, resolveFoodImages } from '../utils/imageResolver';
+import { mergeFoodLogsDeduped, foodLogFingerprint } from '../utils/foodLogDedupe';
+
+/** B13 — only this many history rows mount image sliders at once */
+export const FOOD_HISTORY_PAGE_SIZE = 15;
 import { NutrientPieChart } from './NutrientPieChart';
 import { NutritionLabelTable } from './chat-cards/NutritionLabelTable';
 import { PhysicalFormBadge } from './PhysicalFormBadge';
@@ -22,6 +26,8 @@ interface FoodHistoryTabProps {
   foodLogs: FoodLog[];
   onUpdateFoodLog: (food: FoodLog) => void;
   onDeleteFoodLog: (id: string) => void;
+  /** Persist collapsed food list when sync left duplicates in state */
+  onReplaceFoodLogs?: (foods: FoodLog[]) => void;
   onLogFood?: (food: FoodLog) => void;
   onEditingActiveChange?: (active: boolean) => void;
   isManualEntryOpen?: boolean;
@@ -79,6 +85,7 @@ export default function FoodHistoryTab({
   foodLogs,
   onUpdateFoodLog,
   onDeleteFoodLog,
+  onReplaceFoodLogs,
   onLogFood,
   onEditingActiveChange,
   isManualEntryOpen: propIsManualEntryOpen,
@@ -94,7 +101,8 @@ export default function FoodHistoryTab({
   const [searchTerm, setSearchTerm] = useState('');
   const [expandedLogId, setExpandedLogId] = useState<string | null>(null);
   const [currentPage, setCurrentPage] = useState(1);
-  const itemsPerPage = 20;
+  /** B13 — page size for history list + image loads (free-tier / capacity) */
+  const itemsPerPage = FOOD_HISTORY_PAGE_SIZE;
   
   useEffect(() => {
     setCurrentPage(1);
@@ -337,7 +345,22 @@ export default function FoodHistoryTab({
     };
   }, []);
 
-  const activeFoodLogs = React.useMemo(() => (foodLogs || []).filter(f => f.sync_state !== 'delete'), [foodLogs]);
+  const activeFoodLogs = React.useMemo(() => {
+    const nonDeleted = (foodLogs || []).filter(f => f.sync_state !== 'delete');
+    return mergeFoodLogsDeduped(nonDeleted, []);
+  }, [foodLogs]);
+
+  // Persist collapsed list when state still holds sync retries (oatmeal/honi doubles)
+  React.useEffect(() => {
+    if (!onReplaceFoodLogs) return;
+    const live = (foodLogs || []).filter((f) => f.sync_state !== 'delete');
+    if (live.length > activeFoodLogs.length && activeFoodLogs.length > 0) {
+      console.log(
+        `[FoodDedupe] Collapsing ${live.length} → ${activeFoodLogs.length} food cards (sync duplicates)`
+      );
+      onReplaceFoodLogs(activeFoodLogs);
+    }
+  }, [foodLogs, activeFoodLogs, onReplaceFoodLogs]);
 
   const combinedItems = React.useMemo(() => {
     const savedLogs = activeFoodLogs.map(log => {
@@ -380,7 +403,22 @@ export default function FoodHistoryTab({
         if (job.status !== 'succeeded') return true;
         const pendingFoodLog = job.messages?.find(m => m.pendingFoodLog)?.pendingFoodLog || job.result?.pendingFoodLog || job.result?.data;
         if (!pendingFoodLog) return false;
-        return !activeFoodLogs.some(f => f.id === pendingFoodLog.id);
+        return !activeFoodLogs.some(f => {
+          if (f.id === pendingFoodLog.id || f.id === job.id || (f as any).jobId === job.id) return true;
+          // Soft match: same fingerprint or same day+name+kcal
+          try {
+            if (foodLogFingerprint(f as any) === foodLogFingerprint(pendingFoodLog as any)) return true;
+          } catch { /* ignore */ }
+          if (
+            f.name &&
+            pendingFoodLog.name &&
+            f.name.toLowerCase().trim() === pendingFoodLog.name.toLowerCase().trim() &&
+            toYYYYMMDD(f.date) === toYYYYMMDD(pendingFoodLog.date)
+          ) {
+            return true;
+          }
+          return false;
+        });
       })
       .map(job => ({
         type: 'job' as const,
@@ -390,7 +428,34 @@ export default function FoodHistoryTab({
         data: job
       }));
 
-    return [...savedLogs, ...jobItems].sort((a, b) => {
+    const all = [...savedLogs, ...jobItems];
+    const seen = new Set<string>();
+    const deduped: typeof all = [];
+    all.forEach(item => {
+      // Normalize date + calories so UI list cannot show oatmeal twice
+      const key =
+        item.type === 'log'
+          ? foodLogFingerprint(item.data as any)
+          : `job_${item.id}`;
+      if (item.type === 'log') {
+        if (!seen.has(key)) {
+          seen.add(key);
+          deduped.push(item);
+        }
+      } else {
+        // Hide job cards that soft-match an already shown saved meal
+        const job = item.data as any;
+        const pending =
+          job.messages?.find((m: any) => m.pendingFoodLog)?.pendingFoodLog ||
+          job.result?.pendingFoodLog ||
+          job.result?.data;
+        const jobFp = pending ? foodLogFingerprint(pending as any) : '';
+        if (jobFp && seen.has(jobFp)) return;
+        deduped.push(item);
+      }
+    });
+
+    return deduped.sort((a, b) => {
       return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
     });
   }, [activeFoodLogs, jobs]);
@@ -931,9 +996,15 @@ export default function FoodHistoryTab({
             const log = item.data;
             const isExpanded = expandedLogId === log.id;
             const isEditing = editingLogId === log.id;
-            const primaryImage = log.imageUrl || (log.imageUrls && log.imageUrls.length > 0 ? log.imageUrls[0] : undefined);
-            const resolvedImg = resolveFoodImage(primaryImage, activeFoodLogs, log);
             const resolvedImgs = resolveFoodImages(log.imageUrls, activeFoodLogs, log);
+            const resolvedImg =
+              resolvedImgs[0] ||
+              resolveFoodImage(log.imageUrl, activeFoodLogs, log) ||
+              resolveFoodImage(
+                log.imageUrls && log.imageUrls.length > 0 ? log.imageUrls[0] : undefined,
+                activeFoodLogs,
+                log
+              );
             
             return (
               <div
@@ -941,13 +1012,14 @@ export default function FoodHistoryTab({
                 id={`food-log-item-${log.id}`}
                 className="overflow-hidden transition-all border-b border-theme-border pb-4 mb-4"
               >
-                {/* Large visual rendering of attached meal images */}
+                {/* Large visual rendering of attached meal images (lazy-loaded in ImageSlider) */}
                 {(resolvedImgs.length > 0 || resolvedImg) ? (
                   <div className="w-full h-48 overflow-hidden relative">
-                    <ImageSlider 
-                      images={resolvedImgs} 
-                      singleImage={resolvedImg} 
-                      altText={log.name || "Meal log"} 
+                    <ImageSlider
+                      images={resolvedImgs}
+                      singleImage={resolvedImg}
+                      altText={log.name || 'Meal log'}
+                      deferUntilVisible
                     />
                   </div>
                 ) : null}
@@ -1674,5 +1746,3 @@ export default function FoodHistoryTab({
     </div>
   );
 }
-
-/* FOOD_HISTORY_PAGE_SIZE itemsPerPage currentPage */

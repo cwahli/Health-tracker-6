@@ -1,3 +1,7 @@
+// Load .env BEFORE any module that reads process.env at import time
+// (supabaseAdmin, R2, etc.). Without this, admin client falls back to
+// placeholder.supabase.co and server-owned jobs never mark succeeded.
+import 'dotenv/config';
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
 import sharp from 'sharp';
 import { pushTranslationsToSheets, pullTranslationsFromSheets } from './server_translations';
@@ -11,6 +15,17 @@ import {
   assertComponentSumMatchesItem,
   parseLabelCalories,
 } from './server_budget_reconcile.js';
+import {
+  buildPortionClarifyPayload,
+  applyPortionChoices,
+} from './server_portion_clarify.js';
+import {
+  detectWeightRefineIntent,
+  shouldSkipScoutForWeightRefine,
+  applyWeightRefineToScoutItems,
+  priorScoutHasLabelLocks,
+  REFINE_SCALE_ONLY_LOG,
+} from './server_refine_scale.js';
 import { z } from "zod";
 import { getMappedBiomarkerKey } from './src/utils/biomarkers';
 import * as cheerio from "cheerio";
@@ -459,8 +474,6 @@ import {
   mergeScoutItems, 
   parseAndHealVisionScout 
 } from "./server_vision_scout";
-import { buildPortionClarifyPayload, applyPortionChoices } from "./server_portion_clarify.js";
-import { detectWeightRefineIntent, applyWeightRefineToScoutItems, decideRefineVsScout, priorScoutHasLabelLocks } from "./server_refine_scale.js";
 
 
 import { getFirestore, Firestore } from "firebase-admin/firestore";
@@ -1661,17 +1674,18 @@ app.post('/api/jobs/submit', async (req, res) => {
 app.get('/api/jobs/status', async (req, res) => {
   try {
     const { jobId, userId } = req.query;
-    if (!userId) {
-      return res.status(400).json({ error: 'userId parameter is required' });
-    }
     const { isSupabaseConfigured } = await import('./src/utils/supabaseClient');
     if (!isSupabaseConfigured) {
       return res.json({ jobs: [] });
     }
     const { supabaseAdmin } = await import('./supabaseAdmin');
-    let query = supabaseAdmin.from('agent_jobs').select('*').eq('user_id', String(userId));
+    let query = supabaseAdmin.from('agent_jobs').select('*');
     if (jobId) {
       query = query.eq('id', String(jobId));
+    } else if (userId) {
+      query = query.eq('user_id', String(userId));
+    } else {
+      return res.status(400).json({ error: 'jobId or userId parameter is required' });
     }
     query = query.order('updated_at', { ascending: false }).limit(20);
     const { data, error } = await query;
@@ -1680,6 +1694,7 @@ app.get('/api/jobs/status', async (req, res) => {
     const now = Date.now();
     const staleThresholdMs = 180000; // 3 minutes
     const processedJobs = await Promise.all((data || []).map(async (job: any) => {
+      // awaiting_user can sit while the user picks a portion — do not auto-fail as stale running
       if (job.status === 'running' && job.updated_at) {
         const updatedAtTime = new Date(job.updated_at).getTime();
         if (now - updatedAtTime > staleThresholdMs) {
@@ -1763,9 +1778,12 @@ app.get('/api/jobs/debug', async (req, res) => {
       };
     }
 
+    // B9c / B14 — never return fat base64 meal photos in debug download
+    const { stripHeavyImages } = await import('./src/utils/debugPayload.js');
+    const safePayload = stripHeavyImages(debugPayload);
     res.setHeader('Content-Type', 'application/json');
     res.setHeader('Content-Disposition', `attachment; filename="debug-${jobId}.json"`);
-    res.json(debugPayload);
+    res.json(safePayload);
   } catch (err: any) {
     console.error('Failed to get job debug logs:', err);
     res.status(500).json({ error: err.message || 'Failed to fetch debug logs' });
@@ -1798,10 +1816,14 @@ function getS3Client() {
 app.post('/api/r2/upload-photo', async (req, res) => {
   try {
     const { jobId, payload } = req.body;
-    const publicUrl = `${CLOUDFLARE_R2_PUBLIC_URL}/photos/${jobId}.jpg`;
+    const safeId = String(jobId || 'unknown').replace(/[^a-zA-Z0-9_\-]/g, '_').slice(0, 120);
+    const objectKey = `photos/${safeId}.jpg`;
+    // B11d: same-origin proxy works with private buckets; publicUrl is secondary
+    const proxyUrl = `/photos/${safeId}.jpg`;
+    const publicUrl = `${CLOUDFLARE_R2_PUBLIC_URL}/${objectKey}`;
     const client = getS3Client();
     if (!client) {
-      return res.json({ url: publicUrl });
+      return res.json({ url: proxyUrl, proxyUrl, publicUrl });
     }
 
     let body;
@@ -1821,37 +1843,153 @@ app.post('/api/r2/upload-photo', async (req, res) => {
 
     const command = new PutObjectCommand({
       Bucket: CLOUDFLARE_R2_BUCKET_NAME,
-      Key: `photos/${jobId}.jpg`,
+      Key: objectKey,
       Body: body,
       ContentType: contentType,
     });
     await client.send(command);
 
-    res.json({ url: publicUrl });
+    res.json({ url: proxyUrl, proxyUrl, publicUrl, key: objectKey });
   } catch (err) {
     console.error('Failed to upload photo to R2:', err);
     res.status(500).json({ error: 'Failed to upload photo' });
   }
 });
 
+/** Stream meal photo from R2 (works when bucket is private). B11d. */
+async function streamR2Photo(res: any, rawKey: string) {
+  const { GetObjectCommand } = await import('@aws-sdk/client-s3');
+  const client = getS3Client();
+  if (!client) {
+    res.status(404).send('R2 client not configured');
+    return;
+  }
+  let filename = String(rawKey || '')
+    .replace(/^\/+/, '')
+    .replace(/\.\./g, '')
+    .slice(0, 200);
+  if (!filename) {
+    res.status(400).send('key required');
+    return;
+  }
+  if (!filename.includes('.')) filename = `${filename}.jpg`;
+  const key = filename.startsWith('photos/') ? filename : `photos/${filename}`;
+
+  const tryKeys = [key];
+  // legacy without extension
+  if (key.endsWith('.jpg')) tryKeys.push(key.replace(/\.jpg$/i, ''));
+
+  let lastErr: any = null;
+  for (const k of tryKeys) {
+    try {
+      const command = new GetObjectCommand({
+        Bucket: CLOUDFLARE_R2_BUCKET_NAME,
+        Key: k,
+      });
+      const s3Res = await client.send(command);
+      if (s3Res.ContentType) res.setHeader('Content-Type', s3Res.ContentType);
+      else res.setHeader('Content-Type', 'image/jpeg');
+      res.setHeader('Cache-Control', 'public, max-age=86400');
+      res.setHeader('X-Photo-Key', k);
+      const stream = s3Res.Body as any;
+      if (stream && typeof stream.pipe === 'function') {
+        stream.pipe(res);
+        return;
+      }
+      if (stream && typeof stream.transformToByteArray === 'function') {
+        const bytes = await stream.transformToByteArray();
+        res.send(Buffer.from(bytes));
+        return;
+      }
+    } catch (err: any) {
+      lastErr = err;
+    }
+  }
+  res.status(404).send(lastErr?.message || 'Photo not found');
+}
+
+app.get(['/photos/:key', '/api/r2/photos/:key'], async (req, res) => {
+  try {
+    await streamR2Photo(res, req.params.key);
+  } catch (err: any) {
+    res.status(404).send('Photo not found');
+  }
+});
+
+/**
+ * B11d — resolve a readable URL for a meal photo.
+ * Always returns same-origin proxy when possible; optional short-lived signed URL.
+ * Query: ?key=jobId.jpg  or  ?url=https://….r2.dev/photos/…
+ */
+app.get('/api/r2/photo-url', async (req, res) => {
+  try {
+    let key = String(req.query.key || '').replace(/^\/+/, '');
+    const rawUrl = String(req.query.url || '');
+    if (!key && rawUrl) {
+      const m = rawUrl.match(/\/photos\/([^?#]+)/i);
+      if (m) key = m[1];
+    }
+    if (!key) return res.status(400).json({ error: 'key or url required' });
+    if (!key.includes('.')) key = `${key}.jpg`;
+    key = key.replace(/\.\./g, '').slice(0, 200);
+
+    const proxyUrl = `/photos/${key}`;
+    const objectKey = key.startsWith('photos/') ? key : `photos/${key}`;
+    const wantSigned = String(req.query.signed || '') === '1' || String(req.query.signed || '') === 'true';
+
+    let signedUrl: string | null = null;
+    if (wantSigned) {
+      const client = getS3Client();
+      if (client) {
+        try {
+          const { GetObjectCommand } = await import('@aws-sdk/client-s3');
+          const { getSignedUrl } = await import('@aws-sdk/s3-request-presigner');
+          const cmd = new GetObjectCommand({
+            Bucket: CLOUDFLARE_R2_BUCKET_NAME,
+            Key: objectKey,
+          });
+          signedUrl = await getSignedUrl(client as any, cmd, { expiresIn: 3600 });
+        } catch (e: any) {
+          console.warn('[B11d] signed URL failed, using proxy:', e?.message || e);
+        }
+      }
+    }
+
+    res.json({
+      key: objectKey,
+      proxyUrl,
+      url: signedUrl || proxyUrl,
+      signed: !!signedUrl,
+      expiresIn: signedUrl ? 3600 : null,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message || 'photo-url failed' });
+  }
+});
+
 app.post('/api/r2/upload-debug', async (req, res) => {
   try {
-    const { jobId, payload } = req.body;
-    const publicUrl = `${CLOUDFLARE_R2_PUBLIC_URL}/debug/${jobId}.json`;
+    const { jobId, payload, userId } = req.body;
+    // B14: strip base64; user-scoped cold key (legacy flat key still writable via old clients)
+    const { stripHeavyImages, coldDebugR2Key, COLD_DEBUG_LOG } = await import('./src/utils/debugPayload.js');
+    const key = coldDebugR2Key(String(jobId || 'unknown'), userId || payload?.userId || 'anonymous');
+    const publicUrl = `${CLOUDFLARE_R2_PUBLIC_URL}/${key}`;
     const client = getS3Client();
     if (!client) {
       return res.json({ url: publicUrl });
     }
 
-    const body = Buffer.from(JSON.stringify(payload, null, 2));
+    const stripped = stripHeavyImages(payload || {});
+    const body = Buffer.from(JSON.stringify(stripped, null, 2));
 
     const command = new PutObjectCommand({
       Bucket: CLOUDFLARE_R2_BUCKET_NAME,
-      Key: `debug/${jobId}.json`,
+      Key: key,
       Body: body,
       ContentType: 'application/json',
     });
     await client.send(command);
+    console.log(`${COLD_DEBUG_LOG} api ok key=${key} bytes=${body.length}`);
 
     res.json({ url: publicUrl });
   } catch (err) {
@@ -1867,7 +2005,7 @@ process.on('unhandledRejection', (reason) => {
   console.error('[UNHANDLED REJECTION]', reason);
 });
 const imageSearchCache = new Map<string, any>();
-const PORT = 3000;
+const PORT = Number(process.env.PORT) || 3000;
 const SERVER_START_TIME = Date.now();
 
 async function startServer() {
@@ -4301,15 +4439,28 @@ app.post("/api/gemini/food-analyze", async (req, res) => {
       return profile;
     };
 
-    // Detect pure weight modification on existing active meal — skip scouting and DB search
+    // B5 — Detect weight/portion refine on prior scout (skip Vision Scout + DB when safe).
+    // Path A: text-only refine. Path B: images still attached but printed label locks exist.
+    const priorScoutForRefine = Array.isArray(req.body.activeScoutItems) ? req.body.activeScoutItems : [];
+    const refineDecision = shouldSkipScoutForWeightRefine({
+      message,
+      imageCount: imagePayloads?.length || 0,
+      activeScoutItems: priorScoutForRefine,
+      activeMeal,
+      explicitSkipScout: req.body.skipScout === true,
+    });
+    const weightRefineIntent = refineDecision.intent.isRefine
+      ? refineDecision.intent
+      : detectWeightRefineIntent(message);
+
+    // Legacy narrow pure-weight patterns + B5 broader detect
     const isPureWeightModification = !!(
-      activeMeal &&
-      (!imagePayloads || imagePayloads.length === 0) &&
-      message &&
+      refineDecision.skip ||
       (
-        /^\s*\d+(\.\d+)?\s*g(ram)?s?\s*$/i.test(message.trim()) ||
-        /\b(change|adjust|set|make\s+it|update)\s+(the\s+)?(weight|portion|size)\s+to\s+\d+/i.test(message) ||
-        /\bactually\s+\d+\s*g\b/i.test(message)
+        activeMeal &&
+        (!imagePayloads || imagePayloads.length === 0) &&
+        message &&
+        weightRefineIntent.isRefine
       )
     );
 
@@ -4320,25 +4471,30 @@ app.post("/api/gemini/food-analyze", async (req, res) => {
 
     const isExplicitModify = !!(
       activeMeal &&
-      (!imagePayloads || imagePayloads.length === 0) &&
       message &&
       (
         isPureWeightModification ||
-        userExplicitlySelectedEditMode ||
-        /\b(change|modify|update|remove|delete|correct|instead|replace|adjust|had|ate|only|portion|fraction|half|quarter|third|\d+\/\d+)\b/i.test(message)
+        // Text-only edit keywords (or edit mode pill). Images still allowed when B5 scale-only.
+        (
+          (refineDecision.skip || !imagePayloads || imagePayloads.length === 0) &&
+          (
+            userExplicitlySelectedEditMode ||
+            /\b(change|modify|update|remove|delete|correct|instead|replace|adjust|had|ate|only|portion|fraction|half|quarter|third|\d+\/\d+)\b/i.test(message)
+          )
+        )
       )
     );
 
-    addDebugLog(`[Edit Gate] userSelectedMode="${req.body.userSelectedMode || 'undefined'}" | userExplicitlySelectedEditMode=${userExplicitlySelectedEditMode} | activeMeal=${!!activeMeal} | hasImages=${!!(imagePayloads && imagePayloads.length > 0)} | message="${(message || '').substring(0, 50)}" | isExplicitModify=${isExplicitModify}`);
+    addDebugLog(`[Edit Gate] userSelectedMode="${req.body.userSelectedMode || 'undefined'}" | userExplicitlySelectedEditMode=${userExplicitlySelectedEditMode} | activeMeal=${!!activeMeal} | hasImages=${!!(imagePayloads && imagePayloads.length > 0)} | message="${(message || '').substring(0, 50)}" | isExplicitModify=${isExplicitModify} | refineSkip=${refineDecision.skip} reason=${refineDecision.reason}`);
 
-    const isWeightModification = isPureWeightModification;
+    const isWeightModification = isPureWeightModification || refineDecision.skip;
     const compareOnly = req.body.compareOnly === true;
     const compareItems = Array.isArray(req.body.compareItems) ? req.body.compareItems : [];
 
     let databaseMatches = "";
     const databaseMatchesArray: any[] = [];
     // Only inherit activeScoutItems if this is an explicit modification command on the active meal
-    visionScoutItems = (isPureWeightModification || isExplicitModify) ? (req.body.activeScoutItems || []) : [];
+    visionScoutItems = (isPureWeightModification || isExplicitModify || refineDecision.skip) ? (req.body.activeScoutItems || []) : [];
     let scoutScratchpad: string | undefined;
     let scoutConfidenceRating = "High (>90%)";
     let scoutConfidenceComment = "";
@@ -4351,16 +4507,6 @@ app.post("/api/gemini/food-analyze", async (req, res) => {
     const scoutOriginalQueries: string[] = [];
 
     let visionScoutRanAndReturnedItems = false;
-    
-    const priorScoutForRefine = req.body.activeScoutItems || [];
-    const weightRefineIntent = detectWeightRefineIntent(message || '', priorScoutForRefine);
-    const refineDecision = decideRefineVsScout({
-      isRefine: weightRefineIntent.isRefine,
-      hasImages: !!(imagePayloads && imagePayloads.length > 0),
-      hasPriorScout: priorScoutForRefine.length > 0,
-      hasPortionChoices: !!req.body.portionChoices,
-      isExplicitModify
-    });
 
     if (compareOnly) {
       addDebugLog(`[Shortcut] Compare mode detected. Skipping Vision Scout and DB Search.`);
@@ -4374,8 +4520,9 @@ app.post("/api/gemini/food-analyze", async (req, res) => {
         }));
       }
     } else if (isWeightModification || refineDecision.skip) {
+      // B5 scale-only: re-use prior scout, apply portionChoices and/or parsed refine grams
       addDebugLog(
-        `[Refine] scale-only reason=${refineDecision.reason} locks=${priorScoutHasLabelLocks(priorScoutForRefine)} images=${imagePayloads?.length || 0}`
+        `${REFINE_SCALE_ONLY_LOG} reason=${refineDecision.reason} locks=${priorScoutHasLabelLocks(priorScoutForRefine)} images=${imagePayloads?.length || 0}`
       );
       addDebugLog(`[Shortcut] Weight modification detected on active meal. Skipping Vision Scout and DB Search.`);
       visionScoutItems = Array.isArray(req.body.activeScoutItems) ? [...req.body.activeScoutItems] : visionScoutItems;
@@ -4388,7 +4535,10 @@ app.post("/api/gemini/food-analyze", async (req, res) => {
       visionScoutRanAndReturnedItems = visionScoutItems.length > 0;
     } else if (req.body.skipScout && req.body.activeScoutItems && req.body.activeScoutItems.length > 0) {
       addDebugLog(`[Shortcut] skipScout is true. Inheriting scout items from previous run.`);
-      visionScoutItems = req.body.activeScoutItems;
+      visionScoutItems = applyPortionChoices(
+        req.body.activeScoutItems,
+        req.body.portionChoices
+      );
       visionScoutContentType = req.body.scoutContentType || 'visual';
       visionScoutRanAndReturnedItems = true;
     } else {
@@ -4726,6 +4876,13 @@ app.post("/api/gemini/food-analyze", async (req, res) => {
       }
     }
 
+    // Dish-count based, not flattened query-string count: components/visualIngredients
+    // strings were inflating this and causing false positives on normal 2-3 item meals.
+    const isEvaluationScale = visionScoutItems.length >= 15;
+    const shouldRunDbSearch = !isWeightModification && !isMenuScale && !isEvaluationScale && (visionScoutRanAndReturnedItems || (!hasImage && uniqueQueries.length > 0));
+
+    // B1 — Pause before DB/resolver/dietitian when multi-serve pack portion is ambiguous.
+    // Resume path: skipScout + activeScoutItems + portionChoices (no second scout).
     const portionClarify =
       !req.body.portionChoices &&
       !req.body.skipPortionClarify &&
@@ -4737,13 +4894,20 @@ app.post("/api/gemini/food-analyze", async (req, res) => {
         : null;
 
     if (portionClarify) {
-      addDebugLog(`[PortionClarify] Pausing for user input on: ${portionClarify.items.map((i: any) => i.name).join('; ')}`);
+      addDebugLog(
+        `[PortionClarify] Pausing for user input on: ${portionClarify.items.map((i) => i.name).join('; ')}`
+      );
       sendStreamEvent({
         type: 'status',
         stage: 'portion_clarify',
         status: 'awaiting_user',
         message: portionClarify.promptMessage,
       });
+      sendLog(
+        'status',
+        'scout',
+        `[PortionClarify] ${portionClarify.promptMessage}`
+      );
       return res.json({
         needsPortionClarify: true,
         mode: 'portion_clarify',
@@ -4757,11 +4921,6 @@ app.post("/api/gemini/food-analyze", async (req, res) => {
         },
       });
     }
-
-    // Dish-count based, not flattened query-string count: components/visualIngredients
-    // strings were inflating this and causing false positives on normal 2-3 item meals.
-    const isEvaluationScale = visionScoutItems.length >= 15;
-    const shouldRunDbSearch = !isWeightModification && !isMenuScale && !isEvaluationScale && (visionScoutRanAndReturnedItems || (!hasImage && uniqueQueries.length > 0));
 
     if (shouldRunDbSearch && uniqueQueries.length > 0) {
       sendStreamEvent({ type: 'status', stage: 'db_search', status: 'started', message: 'Searching nutrition databases...' });
@@ -4964,18 +5123,14 @@ app.post("/api/gemini/food-analyze", async (req, res) => {
       sendLog('db_search_complete', 'db_search', `Found ${databaseMatchesArray.length} database match(es) across USDA & OpenFoodFacts.`);
       sendStreamEvent({ type: 'status', stage: 'db_search', status: 'completed', message: 'Database search completed.' });
 
+      // Run Food Resolver Agent only for query gaps that do NOT hit the internal catalog or dish cache
+      // and that are NOT covered by a complete printed packaging label (token save + avoid bad USDA).
+      const gapsForResolver: Array<{ query: string; candidates: Array<{ id: string; name: string; source: string }> }> = [];
+
       const labelCompleteQueries = new Set<string>();
       const scoutHasCompletePrintedLabel = (item: any): boolean => {
         const raw = item?.rawNutritionLabel;
         if (!raw || typeof raw !== 'object') return false;
-        
-        const parseLabelCalories = (obj: any): number | null => {
-          if (obj.calories != null) return Number(obj.calories);
-          if (obj.energy != null) return Number(obj.energy);
-          if (obj.energyKcal != null) return Number(obj.energyKcal);
-          return null;
-        };
-
         const cal = parseLabelCalories(raw);
         if (cal == null || !(cal > 0)) return false;
         let filled = 0;
@@ -4985,14 +5140,15 @@ app.post("/api/gemini/food-analyze", async (req, res) => {
           if (v === undefined || v === null || v === '' || v === '-' || v === '--') continue;
           filled++;
         }
+        // calories + several panel fields (protein/fat/carbs/salt etc.)
         return filled >= 4;
       };
-
       for (const s of visionScoutItems || []) {
         if (!scoutHasCompletePrintedLabel(s)) continue;
         for (const q of [s.originalName, s.keyword, s.name]) {
           if (q && String(q).trim()) labelCompleteQueries.add(String(q).toLowerCase().trim());
         }
+        // Parent label is dish truth — skip component gap LLM too (macros locked later from label)
         if (Array.isArray(s.components)) {
           for (const c of s.components) {
             const cq = c?.searchQuery || c?.name || c?.keyword;
@@ -5001,21 +5157,12 @@ app.post("/api/gemini/food-analyze", async (req, res) => {
         }
       }
 
-      // Run Food Resolver Agent only for query gaps that do NOT hit the internal catalog or dish cache
-      const gapsForResolver: Array<{ query: string; candidates: Array<{ id: string; name: string; source: string }> }> = [];
-
       const internalHits = await Promise.all(searchResultsList.map(async (resItem) => {
         const hit = await resolveInternalFood(resItem.query);
         return { resItem, hit };
       }));
 
       for (const { resItem, hit } of internalHits) {
-        const qNorm = String(resItem.query || '').toLowerCase().trim();
-        if (qNorm && labelCompleteQueries.has(qNorm)) {
-          addDebugLog(`[Food Resolver Skip] Complete printed label covers "${resItem.query}" — skipping LLM resolver for this gap.`);
-          continue;
-        }
-
         if (hit) {
           const virtualId = hit.food_id || `internal_${hit.food_key}`;
           dbMatchMap.set(virtualId, hit.nutrients_per_100g);
@@ -5035,6 +5182,12 @@ app.post("/api/gemini/food-analyze", async (req, res) => {
             nutrients: hit.nutrients_per_100g
           });
           addDebugLog(`[Internal Catalog Hit] Resolved "${resItem.query}" from internal catalog without Food Resolver agent gap.`);
+          continue;
+        }
+
+        const qNorm = String(resItem.query || '').toLowerCase().trim();
+        if (qNorm && labelCompleteQueries.has(qNorm)) {
+          addDebugLog(`[Food Resolver Skip] Complete printed label covers "${resItem.query}" — skipping LLM resolver for this gap.`);
           continue;
         }
 
@@ -5812,7 +5965,6 @@ function parseServingSizeGrams(ssVal: string, totalItemWeight: number): number {
            }
         };
       
-        // Keep calories locked to the kiosk screen OCR value
         // Keep calories locked to the kiosk/OCR printed value. Only fill MISSING macros.
         mapField('protein', ['protein']);
         mapField('fat', ['fat', 'totalFat']);
@@ -7269,7 +7421,12 @@ function parseServingSizeGrams(ssVal: string, totalItemWeight: number): number {
     // 2. Prepend active state to Master System Instructions
     let effectiveActiveMeal = activeMeal;
     const hasUploadedNewImages = imagePayloads && imagePayloads.length > 0;
-    if (!isWeightModification && !refineDecision.skip && ((scoutRecommendedMode === "new_log" && !isExplicitModify && !userExplicitlySelectedEditMode) || (hasUploadedNewImages && !isExplicitModify))) {
+    // B5: do not wipe active meal when scale-only refine (even if prior photos still attached)
+    if (
+      !isWeightModification &&
+      ((scoutRecommendedMode === "new_log" && !isExplicitModify && !userExplicitlySelectedEditMode) ||
+        (hasUploadedNewImages && !isExplicitModify))
+    ) {
       addDebugLog(`[State Isolation] New image scan or new_log mode detected. Isolating activeMeal context so Dietitian operates on clean state.`);
       effectiveActiveMeal = null;
       historyContext = "";
@@ -7651,7 +7808,7 @@ Current User Input: "${message}"`) + modeDPromptSuffix;
     );
 
     if (canSkipDietitianForPureScale) {
-      const targetWeight = (weightRefineIntent.isRefine && (weightRefineIntent as any).weightGrams) ? (weightRefineIntent as any).weightGrams : (activeMeal.weightGrams || 100);
+      const targetWeight = (weightRefineIntent.isRefine && weightRefineIntent.weightGrams) ? weightRefineIntent.weightGrams : (activeMeal.weightGrams || 100);
       addDebugLog(`[Refine] skip-dietitian: Scaled label-locked meal directly to ${targetWeight}g without LLM call.`);
       sendStreamEvent({ type: 'status', stage: 'dietitian', status: 'completed', message: `Scaled portion to ${targetWeight}g.` });
       textOutput = JSON.stringify({
@@ -13556,10 +13713,10 @@ registerIssueBacklogRoutes(app, {
   sessionDebugLogs: typeof sessionDebugLogs !== 'undefined' ? sessionDebugLogs : {},
 });
 
-// --- Bug snapshot + AI triage ---
+// --- Bug snapshot packs (R2 /bugs/) + triage digest + brief API (Initiative K) ---
 registerBugSnapshotRoutes(app, {
-  callUnifiedLLM,
-  getS3Client,
+  callUnifiedLLM: (args: any) => callUnifiedLLM(args),
+  getS3Client: () => getS3Client(),
   bucketName: CLOUDFLARE_R2_BUCKET_NAME,
   publicUrlBase: CLOUDFLARE_R2_PUBLIC_URL,
   addDebugLog: (msg: string, sessionId?: string) => addDebugLog(msg, sessionId),
@@ -14216,17 +14373,3 @@ async function compressImagesInObject(obj: any, report: any): Promise<boolean> {
 if (process.env.NODE_ENV !== 'test' && !process.env.VITEST) {
   startServer();
 }
-
-// B5 refine checks
-import { shouldSkipScoutForWeightRefine, applyWeightRefineToScoutItems } from './server_refine_scale.js';
-function b5Extras() {
-  const isWeightModification = true;
-  applyWeightRefineToScoutItems();
-  console.log('REFINE_SCALE_ONLY_LOG');
-}
-
-/* proxyUrl /api/r2/photo-url streamR2Photo getSignedUrl s3-request-presigner */
-
-/* buildPortionClarifyPayload needsPortionClarify: true [PortionClarify] Pausing for user input applyPortionChoices skipScout  applyPortionChoices */
-
-/* stripHeavyImages /api/jobs/debug coldDebugR2Key upload-debug */

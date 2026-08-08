@@ -16,7 +16,6 @@ import { JobQueueRunner } from './jobs/JobQueueRunner';
 import { initSupabaseJobSync } from './jobs/SupabaseJobSync';
 import { ImageStore } from './jobs/ImageStore';
 import { executeFoodAgent } from './jobs/FoodAgentExecutor';
-// executeFoodAgent wiring: checkpoint: job.checkpoint, skipScout: true
 import { executeMedicalAgent } from './jobs/MedicalAgentExecutor';
 import { getProgressPercent, getStepCeiling } from './jobs/progress';
 import FloatingActionSheet from './components/FloatingActionSheet';
@@ -55,7 +54,14 @@ function firestoreReadGuard(label: string, docCount: number = 1): boolean {
 
 import { runCleanupMigration } from './utils/migrationTask';
 import { syncLogsWithTimeBuckets, fetchAllConsolidatedLogs, subscribeToSupabaseLogs, upsertProfileToSupabase, mergeByRecency, mergeActions, mergeBenefits, mergeFoodIdeas, mergeReports, mergeProfiles, mergeBiomarkerHistory } from "./utils/syncUtils";
+import { mergeFoodLogsDeduped, rehydrateFoodImagesFromDonors, foodLogFingerprint } from "./utils/foodLogDedupe";
+import { isUsableImageUrl } from "./utils/foodImageSources";
+import { sanitizeBiomarkerHistoryOnLoad } from "./utils/biomarkers";
+import type { SanitizeProposal } from "./utils/dataSanitize";
 import { compressImage } from "./utils/imageCompressor";
+
+/** Cap bulk foodImages Firestore reads per sync (console showed 209 — free-tier death). Rest stay lazy. */
+const MAX_IMAGE_FETCH_PER_SYNC = 24;
 
 const QUOTA_STORAGE_KEY = 'health_cockpit_quota_data';
 const getQuotaKey = () => {
@@ -858,14 +864,36 @@ export default function App() {
     ]);
   };
   // Core logs and targets states
-  const [foodLogs, setFoodLogs] = useState<FoodLog[]>([]);
+  const [foodLogs, setFoodLogsRaw] = useState<FoodLog[]>([]);
+  // B11: every write path collapses id + soft name/kcal/day duplicates (YOLK variants, retries)
+  const setFoodLogs = (val: FoodLog[] | ((prev: FoodLog[]) => FoodLog[])) => {
+    setFoodLogsRaw((prev) => {
+      const next = typeof val === 'function' ? val(prev) : val;
+      if (!Array.isArray(next)) return prev;
+      return mergeFoodLogsDeduped(next, []);
+    });
+  };
   const [biomarkers, setBiomarkers] = useState<{ [key: string]: number | string }>({});
   const [biomarkerHistoryRaw, setBiomarkerHistoryRaw] = useState<BiomarkerLog[]>([]);
   const setBiomarkerHistory = (val: BiomarkerLog[] | ((prev: BiomarkerLog[]) => BiomarkerLog[])) => {
+    const apply = (raw: BiomarkerLog[]) => {
+      const normalized = normalizeBiomarkerHistory(raw || []);
+      // Auto-fix unit-scale phantoms (195 mmol/L chol, 42.1 Hct, 14.5 Hb as g/L) and drop rest
+      const { history: cleaned, fixedCount, current } = sanitizeBiomarkerHistoryOnLoad(
+        normalized,
+        profileRef.current || profile
+      );
+      if (fixedCount > 0) {
+        console.log(`[BiomarkerSanitize] Auto-fixed/dropped ${fixedCount} improbable unit-scale values`);
+        // Rebuild current from cleaned history only (drop phantom 195 mmol/L chol etc.)
+        setBiomarkers({ ...current });
+      }
+      return cleaned as BiomarkerLog[];
+    };
     if (typeof val === 'function') {
-      setBiomarkerHistoryRaw(prev => normalizeBiomarkerHistory(val(prev)));
+      setBiomarkerHistoryRaw((prev) => apply(val(prev)));
     } else {
-      setBiomarkerHistoryRaw(normalizeBiomarkerHistory(val));
+      setBiomarkerHistoryRaw(apply(val));
     }
   };
   const biomarkerHistory = biomarkerHistoryRaw;
@@ -1073,6 +1101,49 @@ export default function App() {
                   progressPercent: progressVal,
                 });
 
+                if (serverJob.status === 'awaiting_user') {
+                  const cleanResult = serverJob.clean_result || {};
+                  const clarifyMsg =
+                    cleanResult.message ||
+                    serverJob.status_message ||
+                    'Confirm how much you ate';
+                  // B6c — short status strip while full clarify question stays in the assistant bubble
+                  const portionStatusMsg = 'Waiting for portion choice';
+                  const userMsgs = (job.messages || []).filter((m) => m.role === 'user');
+                  const clarifyAssistant = {
+                    id: `msg_assistant_clarify_${job.id}`,
+                    role: 'assistant',
+                    content: clarifyMsg,
+                    timestamp: new Date().toISOString(),
+                    isLive: false,
+                    agentType: 'food',
+                    data: {
+                      needsPortionClarify: true,
+                      portionClarify: cleanResult.portionClarify,
+                      scoutItems: cleanResult.scoutItems || [],
+                      photoUrl: serverJob.photo_url || cleanResult.photoUrl,
+                      debugUrl: serverJob.debug_url || cleanResult.debugUrl,
+                      agentResult: {
+                        backendLogs: cleanResult.backendLogs || '',
+                        globalLiveLogs: cleanResult.backendLogs || '',
+                        scoutItems: cleanResult.scoutItems || [],
+                        activeStage: 'portion_clarify',
+                      },
+                    },
+                  };
+                  JobStore.updateJob(job.id, {
+                    status: 'awaiting_user',
+                    statusMessage: portionStatusMsg,
+                    progressPercent: serverJob.progress_percent || 45,
+                    result: cleanResult,
+                    messages: [...userMsgs, clarifyAssistant],
+                    photoUrl: serverJob.photo_url || cleanResult.photoUrl,
+                    debugUrl: serverJob.debug_url || cleanResult.debugUrl,
+                  });
+                  done = true;
+                  return;
+                }
+
                 if (serverJob.status === 'succeeded') {
                   const cleanResult = serverJob.clean_result || {};
                   const pendingFoodLog =
@@ -1158,32 +1229,6 @@ export default function App() {
 
                   done = true;
                   return; // Done!
-                } else if (serverJob.status === 'awaiting_user') {
-                  const cleanResult = serverJob.clean_result || {};
-                  const userMsgs = (job.messages || []).filter((m) => m.role === 'user');
-                  const assistantMsg = {
-                    id: `msg_assistant_${job.id}`,
-                    role: 'assistant',
-                    content: serverJob.status_message || 'Please clarify.',
-                    timestamp: new Date().toISOString(),
-                    isLive: false,
-                    agentType: 'food',
-                    data: {
-                      portionClarify: cleanResult.portionClarify,
-                      agentResult: cleanResult.agentResult || {
-                        scoutItems: cleanResult.scoutItems || [],
-                        activeStage: 'portion_clarify'
-                      }
-                    }
-                  };
-                  JobStore.updateJob(job.id, {
-                    status: 'awaiting_user',
-                    statusMessage: serverJob.status_message,
-                    messages: [...userMsgs, assistantMsg],
-                    result: cleanResult
-                  });
-                  done = true;
-                  return; // Stop polling, wait for user input
                 } else if (serverJob.status === 'failed') {
                   const reqId = serverJob.request_id || job.requestId || job.id;
                   const failMsg = serverJob.status_message || 'Analysis failed on server.';
@@ -1199,33 +1244,38 @@ export default function App() {
                     summary: `Failed: ${job.kind || 'Food Log'}`,
                     logs: logsList
                   });
-                  
-                  // Preserve assistant message on failure
+
+                  // Keep a non-live assistant bubble + full logs so the run doesn't "vanish"
+                  const pendingFoodLog = cleanResult.pendingFoodLog || cleanResult.data || null;
                   const userMsgs = (job.messages || []).filter((m) => m.role === 'user');
-                  const assistantMsg = {
+                  const failAssistant = {
                     id: `msg_assistant_fail_${job.id}`,
                     role: 'assistant',
-                    content: failMsg,
+                    content: failMsg + (pendingFoodLog ? '\n\n(Partial result was preserved — open debug or retry.)' : ''),
                     timestamp: new Date().toISOString(),
                     isLive: false,
                     agentType: 'food',
+                    pendingFoodLog: pendingFoodLog || undefined,
                     data: {
+                      pendingFoodLog: pendingFoodLog || undefined,
                       debugUrl: serverJob.debug_url || cleanResult.debugUrl,
-                      backendLogs: rawLogs,
+                      photoUrl: serverJob.photo_url || cleanResult.photoUrl,
+                      scoutItems: cleanResult.scoutItems || [],
                       agentResult: {
-                        scoutItems: cleanResult.scoutItems || [],
-                        backendLogs: rawLogs
+                        backendLogs: typeof rawLogs === 'string' ? rawLogs : failMsg,
+                        globalLiveLogs: typeof rawLogs === 'string' ? rawLogs : failMsg,
                       },
-                      preservationNote: "Partial result was preserved"
-                    }
+                    },
                   };
 
                   JobStore.updateJob(job.id, {
                     status: 'failed',
                     statusMessage: failMsg,
-                    messages: [...userMsgs, assistantMsg],
                     finishedAt: new Date().toISOString(),
-                    error: { class: 'transient', message: failMsg }
+                    error: { class: 'transient', message: failMsg },
+                    result: { ...cleanResult, pendingFoodLog, backendLogs: rawLogs },
+                    messages: [...userMsgs, failAssistant],
+                    debugUrl: serverJob.debug_url || cleanResult.debugUrl,
                   });
                   done = true;
                   return;
@@ -1236,59 +1286,148 @@ export default function App() {
             }
 
             if (!done) {
+              // Last-chance poll: server may have succeeded after client poll window
               const reqId = job.requestId || job.id;
-              
-              // Last-chance poll
-              let recoveredServerJob: any = null;
+              let lateJob: any = null;
               try {
-                const statusRes = await fetch(`/api/jobs/status?jobId=${job.id}&userId=${auth.currentUser?.uid || 'anonymous'}`);
-                if (statusRes.ok) {
-                  const { jobs } = await statusRes.json();
-                  recoveredServerJob = jobs && jobs[0];
+                const lateRes = await fetch(`/api/jobs/status?jobId=${job.id}&userId=${auth.currentUser?.uid || 'anonymous'}`);
+                if (lateRes.ok) {
+                  const { jobs } = await lateRes.json();
+                  lateJob = jobs && jobs[0];
                 }
-              } catch (e) {}
+              } catch (_) { /* ignore */ }
 
-              if (recoveredServerJob && recoveredServerJob.status === 'succeeded') {
-                console.log(`[JobQueueRunner] Job ${job.id} Analysis complete (recovered after poll window).`);
-                JobStore.updateJob(job.id, {
-                  status: 'processing',
-                  statusMessage: 'Recovering final result...',
-                  progressPercent: 99
-                });
-                // We just continue the loop once more artificially by extending maxPollAttempts
-                // But wait, the while loop already broke. 
-                // Let's just recursively call processJob or just update the DB and let the next tick handle it?
-                // Actually, just wait for next poll by not marking it failed. But we are outside the loop.
-              } else {
-                const timeoutMsg = 'Analysis timed out after 3 minutes. Tap Retry to try again.';
-                saveAgentRequestLog({
-                  id: reqId,
-                  timestamp: new Date().toISOString(),
-                  summary: `Timed Out: ${job.kind || 'Food Log'}`,
-                  logs: [{ timestamp: new Date().toISOString(), message: `[error] ${timeoutMsg}` }]
-                });
-
+              if (lateJob?.status === 'succeeded' && lateJob.clean_result) {
+                const cleanResult = lateJob.clean_result || {};
+                const pendingFoodLog = cleanResult.pendingFoodLog || cleanResult.data || null;
+                const messageText = cleanResult.message || cleanResult.text || pendingFoodLog?.message || 'Analysis complete.';
                 const userMsgs = (job.messages || []).filter((m) => m.role === 'user');
                 const assistantMsg = {
-                  id: `msg_assistant_fail_${job.id}`,
+                  id: `msg_assistant_${job.id}`,
                   role: 'assistant',
-                  content: timeoutMsg,
+                  content: messageText,
                   timestamp: new Date().toISOString(),
                   isLive: false,
                   agentType: 'food',
+                  pendingFoodLog,
                   data: {
-                    preservationNote: "Partial result was preserved"
-                  }
+                    pendingFoodLog,
+                    photoUrl: lateJob.photo_url || cleanResult.photoUrl,
+                    debugUrl: lateJob.debug_url || cleanResult.debugUrl,
+                    scoutItems: cleanResult.scoutItems || [],
+                    agentResult: {
+                      backendLogs: cleanResult.backendLogs || '',
+                      globalLiveLogs: cleanResult.backendLogs || '',
+                      dietitianAnswer: messageText,
+                    },
+                  },
                 };
+                JobStore.updateJob(job.id, {
+                  status: 'succeeded',
+                  result: { ...cleanResult, pendingFoodLog },
+                  messages: [...userMsgs, assistantMsg],
+                  progressPercent: 100,
+                  statusMessage: 'Analysis complete (recovered after poll window)',
+                  finishedAt: new Date().toISOString(),
+                });
+                const rawLogs = cleanResult.backendLogs || '';
+                const logsList = typeof rawLogs === 'string' && rawLogs.trim()
+                  ? rawLogs.split('\n').filter(Boolean).map((line: string) => ({ timestamp: new Date().toISOString(), message: line }))
+                  : [{ timestamp: new Date().toISOString(), message: `[food_agent] Recovered late success for ${pendingFoodLog?.name || job.id}` }];
+                saveAgentRequestLog({
+                  id: reqId,
+                  timestamp: new Date().toISOString(),
+                  summary: pendingFoodLog?.name || messageText || 'Food Analysis',
+                  logs: logsList,
+                });
+                return;
+              }
 
+              if (lateJob?.status === 'failed' && lateJob.clean_result?.backendLogs) {
+                const cleanResult = lateJob.clean_result || {};
+                const failMsg = lateJob.status_message || 'Analysis failed on server.';
+                const rawLogs = cleanResult.backendLogs || failMsg;
+                const logsList = String(rawLogs).split('\n').filter(Boolean).map((line: string) => ({
+                  timestamp: new Date().toISOString(),
+                  message: line,
+                }));
+                saveAgentRequestLog({
+                  id: reqId,
+                  timestamp: new Date().toISOString(),
+                  summary: `Failed: ${job.kind || 'Food Log'}`,
+                  logs: logsList,
+                });
+                const userMsgs = (job.messages || []).filter((m) => m.role === 'user');
                 JobStore.updateJob(job.id, {
                   status: 'failed',
-                  statusMessage: timeoutMsg,
-                  messages: [...userMsgs, assistantMsg],
+                  statusMessage: failMsg,
                   finishedAt: new Date().toISOString(),
-                  error: { class: 'transient', message: timeoutMsg }
+                  error: { class: 'transient', message: failMsg },
+                  result: cleanResult,
+                  messages: [
+                    ...userMsgs,
+                    {
+                      id: `msg_assistant_fail_${job.id}`,
+                      role: 'assistant',
+                      content: failMsg,
+                      timestamp: new Date().toISOString(),
+                      isLive: false,
+                      agentType: 'food',
+                      data: {
+                        agentResult: { backendLogs: rawLogs, globalLiveLogs: rawLogs },
+                        debugUrl: lateJob.debug_url || cleanResult.debugUrl,
+                      },
+                    },
+                  ],
                 });
+                return;
               }
+
+              const timeoutMsg = 'Analysis timed out after 3 minutes. Tap Retry to try again.';
+              const liveLogs =
+                job.liveThoughts?.backendLogs ||
+                job.liveThoughts?.globalLiveLogs ||
+                '';
+              saveAgentRequestLog({
+                id: reqId,
+                timestamp: new Date().toISOString(),
+                summary: `Timed Out: ${job.kind || 'Food Log'}`,
+                logs: liveLogs
+                  ? String(liveLogs).split('\n').filter(Boolean).map((line: string) => ({
+                      timestamp: new Date().toISOString(),
+                      message: line,
+                    })).concat([{ timestamp: new Date().toISOString(), message: `[error] ${timeoutMsg}` }])
+                  : [{ timestamp: new Date().toISOString(), message: `[error] ${timeoutMsg}` }],
+              });
+
+              const userMsgs = (job.messages || []).filter((m) => m.role === 'user');
+              JobStore.updateJob(job.id, {
+                status: 'failed',
+                statusMessage: timeoutMsg,
+                finishedAt: new Date().toISOString(),
+                error: { class: 'transient', message: timeoutMsg },
+                result: {
+                  backendLogs: liveLogs || timeoutMsg,
+                  message: timeoutMsg,
+                },
+                messages: [
+                  ...userMsgs,
+                  {
+                    id: `msg_assistant_timeout_${job.id}`,
+                    role: 'assistant',
+                    content: timeoutMsg,
+                    timestamp: new Date().toISOString(),
+                    isLive: false,
+                    agentType: 'food',
+                    data: {
+                      agentResult: {
+                        backendLogs: liveLogs || timeoutMsg,
+                        globalLiveLogs: liveLogs || timeoutMsg,
+                      },
+                    },
+                  },
+                ],
+              });
             }
             return;
           }
@@ -1628,7 +1767,7 @@ export default function App() {
         });
       }
     });
-    let localFoods = Array.from(localFoodMap.values());
+    let localFoods = mergeFoodLogsDeduped(Array.from(localFoodMap.values()), []);
 
     const diskBio: BiomarkerLog[] = parsedLocal.biomarkerHistory || [];
     const memoryBio: BiomarkerLog[] = isSameUser ? biomarkerHistory : [];
@@ -1758,7 +1897,7 @@ export default function App() {
         
         let mergedBioHist = sb;
         if (serverFoods.length > 0) {
-          setFoodLogs(prevFoods => mergeByRecency(prevFoods, serverFoods));
+          setFoodLogs(prevFoods => mergeFoodLogsDeduped(prevFoods, serverFoods));
         }
         if (serverBiomarkers.length > 0) {
           mergedBioHist = mergeBiomarkerHistory(serverBiomarkers, sb, deletedBios);
@@ -1854,7 +1993,12 @@ export default function App() {
 
         const delFoods = authProfile.deletedFoodLogIds || {};
         const delBios = authProfile.deletedBiomarkerLogIds || {};
-        const mergedFoods = (serverFoods || []).filter(f => f.sync_state !== 'delete' && !delFoods[f.id]);
+        // B11: always dedupe force-pull foods (retry ids / multi-device duplicates)
+        let mergedFoods = mergeFoodLogsDeduped(
+          (serverFoods || []).filter(f => f.sync_state !== 'delete' && !delFoods[f.id]),
+          []
+        );
+        mergedFoods = rehydrateFoodImagesFromDonors(mergedFoods, foodLogsRef.current || []);
         const mergedBioHistory = (serverBiomarkers || []).filter(b => b.sync_state !== 'delete' && !delBios[b.id]);
         const mergedActions = Array.isArray(serverActions) ? serverActions : [];
         const mergedBenefits = Array.isArray(serverBenefits) ? serverBenefits : [];
@@ -2084,80 +2228,109 @@ export default function App() {
               if (Array.isArray(serverBenefits)) spBenefits = serverBenefits;
               if (serverReport !== undefined && serverReport !== null) spReport = serverReport;
               
-              // We must still load images
+              // Images: seed from local (id + fingerprint), fetch at most MAX_IMAGE_FETCH_PER_SYNC recent missing
               if (v2Foods.length > 0 && localStorage.getItem('auto_sync_disabled') !== 'true') {
                 const imageMap: Record<string, any> = {};
-                
-                // 1. Seed from local storage to avoid downloading identical images
+
+                // 1. Seed from local — by id (usable URLs only)
                 localFoods.forEach(lf => {
-                  const hasRealImage = lf.imageUrl && lf.imageUrl !== '[image_removed_for_snapshot]' && lf.imageUrl !== '';
-                  const hasRealUrls = lf.imageUrls && lf.imageUrls.length > 0 && lf.imageUrls.some(u => u && u !== '[image_removed_for_snapshot]' && u !== '');
+                  const hasRealImage = isUsableImageUrl(lf.imageUrl);
+                  const hasRealUrls = Array.isArray(lf.imageUrls) && lf.imageUrls.some(isUsableImageUrl);
                   if (hasRealImage || hasRealUrls) {
-                    imageMap[lf.id] = { imageUrl: lf.imageUrl, imageUrls: lf.imageUrls || [] };
+                    imageMap[lf.id] = {
+                      imageUrl: hasRealImage ? lf.imageUrl : (lf.imageUrls || []).find(isUsableImageUrl),
+                      imageUrls: (lf.imageUrls || []).filter(isUsableImageUrl),
+                    };
                   }
                 });
 
-                // 2. Identify foods that are missing images locally
+                // Prefer durable http(s) /photos already on cloud meta before foodImages blast
+                v2Foods.forEach(f => {
+                  if (imageMap[f.id]) return;
+                  if (isUsableImageUrl(f.imageUrl) || (Array.isArray(f.imageUrls) && f.imageUrls.some(isUsableImageUrl))) {
+                    imageMap[f.id] = {
+                      imageUrl: isUsableImageUrl(f.imageUrl) ? f.imageUrl : (f.imageUrls || []).find(isUsableImageUrl),
+                      imageUrls: (f.imageUrls || []).filter(isUsableImageUrl),
+                    };
+                  }
+                });
+
+                // 2. Missing after local seed — only fetch recent N (lazy remainder)
                 const missingImageIds = v2Foods
                   .filter(f => {
                     const mapped = imageMap[f.id];
                     if (!mapped) return true;
-                    const isMissing = !mapped.imageUrl || mapped.imageUrl === '[image_removed_for_snapshot]' || mapped.imageUrl === '';
-                    const hasUrls = mapped.imageUrls && mapped.imageUrls.length > 0 && mapped.imageUrls.some((u: string) => u && u !== '[image_removed_for_snapshot]' && u !== '');
-                    return isMissing && !hasUrls;
+                    return !isUsableImageUrl(mapped.imageUrl) &&
+                      !(Array.isArray(mapped.imageUrls) && mapped.imageUrls.some(isUsableImageUrl));
                   })
+                  .sort((a, b) => (b.updated_at || 0) - (a.updated_at || 0))
                   .map(f => f.id);
 
-                // 3. Fetch ONLY missing images individually
-                if (missingImageIds.length > 0) {
-                  console.log(`[Sync] Fetching ${missingImageIds.length} missing images from server to avoid massive reads...`);
-                  for (let i = 0; i < missingImageIds.length; i += 10) {
-                    const chunk = missingImageIds.slice(i, i + 10);
+                const toFetch = missingImageIds.slice(0, MAX_IMAGE_FETCH_PER_SYNC);
+                const deferred = missingImageIds.length - toFetch.length;
+                if (toFetch.length > 0 && db) {
+                  console.log(
+                    `[Sync] Fetching ${toFetch.length} missing images (cap ${MAX_IMAGE_FETCH_PER_SYNC}` +
+                      (deferred > 0 ? `; ${deferred} deferred for lazy/history open` : '') +
+                      `)...`
+                  );
+                  for (let i = 0; i < toFetch.length; i += 8) {
+                    const chunk = toFetch.slice(i, i + 8);
                     await Promise.all(chunk.map(async id => {
                       try {
                         const snap = await getDoc(doc(db, 'users', uid, 'foodImages', id));
                         if (snap.exists()) {
-                           const data = snap.data();
-                           const hasDataRealImage = data && data.imageUrl && data.imageUrl !== '[image_removed_for_snapshot]';
-                           const hasDataRealUrls = data && data.imageUrls && data.imageUrls.length > 0 && data.imageUrls.some((u: string) => u && u !== '[image_removed_for_snapshot]');
-                           if (hasDataRealImage || hasDataRealUrls) {
-                             imageMap[id] = { imageUrl: data.imageUrl, imageUrls: data.imageUrls || [] };
-                           }
+                          const data = snap.data();
+                          const hasDataRealImage = isUsableImageUrl(data?.imageUrl);
+                          const hasDataRealUrls = Array.isArray(data?.imageUrls) && data.imageUrls.some(isUsableImageUrl);
+                          if (hasDataRealImage || hasDataRealUrls) {
+                            imageMap[id] = {
+                              imageUrl: hasDataRealImage ? data.imageUrl : data.imageUrls.find(isUsableImageUrl),
+                              imageUrls: (data.imageUrls || []).filter(isUsableImageUrl),
+                            };
+                          }
                         }
                       } catch (e) {
-                         console.warn(`Failed to fetch image for ${id}`, e);
+                        console.warn(`Failed to fetch image for ${id}`, e);
                       }
                     }));
                   }
                 }
 
-                v2Foods = v2Foods.map(f => ({ ...f, ...imageMap[f.id] }));
+                v2Foods = v2Foods.map(f => (imageMap[f.id] ? { ...f, ...imageMap[f.id] } : f));
+                // Cross-id: rehydrate from local meals with same fingerprint
+                v2Foods = rehydrateFoodImagesFromDonors(v2Foods, localFoods);
+                // Collapse duplicate meals before merge
+                v2Foods = mergeFoodLogsDeduped(v2Foods, []);
 
-                // --- IMAGE RESTORE FALLBACK ---
-                const isImageMissing = (item: any) => !item.imageUrl || item.imageUrl === '[image_removed_for_snapshot]' || item.imageUrl === '';
-                const missingImageFoods = v2Foods.filter(f => isImageMissing(f) && (!f.imageUrls || f.imageUrls.length === 0 || f.imageUrls.every(u => !u || u === '[image_removed_for_snapshot]')));
+                // --- IMAGE RESTORE FALLBACK (legacy foodLogs) — only remaining recent missing ---
+                const isImageMissing = (item: any) =>
+                  !isUsableImageUrl(item.imageUrl) &&
+                  !(Array.isArray(item.imageUrls) && item.imageUrls.some(isUsableImageUrl));
+                const missingImageFoods = v2Foods
+                  .filter(f => isImageMissing(f))
+                  .sort((a, b) => (b.updated_at || 0) - (a.updated_at || 0))
+                  .slice(0, Math.min(12, MAX_IMAGE_FETCH_PER_SYNC));
                 const hasMigratedImages = cloudProfile?.metadata?.legacyImagesMigrated || localProfile?.metadata?.legacyImagesMigrated;
-                if (missingImageFoods.length > 0 && !hasMigratedImages) {
-                    console.log(`[Migration] Attempting to restore ${missingImageFoods.length} missing images from legacy foodLogs collection individually...`);
+                if (missingImageFoods.length > 0 && !hasMigratedImages && db) {
+                    console.log(`[Migration] Attempting to restore ${missingImageFoods.length} missing images from legacy foodLogs (capped)...`);
                     try {
                         const recoveredUpdates: any[] = [];
-                        
-                        // Fetch missing legacy images individually in chunks of 10 to prevent massive read spikes
                         const missingIds = missingImageFoods.map(f => f.id);
-                        for (let i = 0; i < missingIds.length; i += 10) {
-                            const chunk = missingIds.slice(i, i + 10);
+                        for (let i = 0; i < missingIds.length; i += 8) {
+                            const chunk = missingIds.slice(i, i + 8);
                             await Promise.all(chunk.map(async id => {
                                 try {
                                     const legacyDoc = await getDoc(doc(db, 'users', uid, 'foodLogs', id));
                                     if (legacyDoc.exists()) {
                                         const data = legacyDoc.data();
                                         const f = v2Foods.find(v => v.id === id);
-                                        const hasLegacyRealImage = data && data.imageUrl && data.imageUrl !== '[image_removed_for_snapshot]';
-                                        const hasLegacyRealUrls = data && data.imageUrls && data.imageUrls.length > 0 && data.imageUrls.some((u: string) => u && u !== '[image_removed_for_snapshot]');
+                                        const hasLegacyRealImage = isUsableImageUrl(data?.imageUrl);
+                                        const hasLegacyRealUrls = Array.isArray(data?.imageUrls) && data.imageUrls.some(isUsableImageUrl);
                                         if (f && isImageMissing(f) && (hasLegacyRealImage || hasLegacyRealUrls)) {
-                                            f.imageUrl = data.imageUrl;
-                                            f.imageUrls = data.imageUrls || [];
-                                            recoveredUpdates.push({ id, imageUrl: data.imageUrl, imageUrls: data.imageUrls });
+                                            f.imageUrl = hasLegacyRealImage ? data.imageUrl : data.imageUrls.find(isUsableImageUrl);
+                                            f.imageUrls = (data.imageUrls || []).filter(isUsableImageUrl);
+                                            recoveredUpdates.push({ id, imageUrl: f.imageUrl, imageUrls: f.imageUrls });
                                         }
                                     }
                                 } catch (e) {
@@ -2417,7 +2590,11 @@ export default function App() {
               if (t >= f) delete mergedProfile.notUsedBiomarkers![k];
             });
 
-            mergedFoods = (foods || []).filter(f => f.sync_state !== 'delete' && !delFoods[f.id]);
+            mergedFoods = mergeFoodLogsDeduped(
+              (foods || []).filter(f => f.sync_state !== 'delete' && !delFoods[f.id]),
+              []
+            );
+            mergedFoods = rehydrateFoodImagesFromDonors(mergedFoods, filteredLocalFoods || localFoods || []);
             mergedBioHistory = (bioHistory || []).filter(b => b.sync_state !== 'delete' && !delBios[b.id]);
             if (spProfile) {
               mergedActions = Array.isArray(spActions) ? spActions : [];
@@ -2451,19 +2628,22 @@ export default function App() {
               if (!existingLocal) {
                 foodUnionMap.set(serverItem.id, serverItem);
               } else {
-                const localHasImage = existingLocal.imageUrl && existingLocal.imageUrl !== "[image_removed_for_snapshot]" && existingLocal.imageUrl !== "";
-                const serverHasImage = serverItem.imageUrl && serverItem.imageUrl !== "[image_removed_for_snapshot]" && serverItem.imageUrl !== "";
-                const localHasUrls = existingLocal.imageUrls && existingLocal.imageUrls.length > 0;
-                const serverHasUrls = serverItem.imageUrls && serverItem.imageUrls.length > 0;
+                const localHasImage = isUsableImageUrl(existingLocal.imageUrl);
+                const serverHasImage = isUsableImageUrl(serverItem.imageUrl);
+                const localUrls = (existingLocal.imageUrls || []).filter(isUsableImageUrl);
+                const serverUrls = (serverItem.imageUrls || []).filter(isUsableImageUrl);
                 foodUnionMap.set(serverItem.id, {
                   ...serverItem,
                   ...existingLocal,
-                  imageUrl: localHasImage ? existingLocal.imageUrl : (serverHasImage ? serverItem.imageUrl : existingLocal.imageUrl),
-                  imageUrls: localHasUrls ? existingLocal.imageUrls : (serverHasUrls ? serverItem.imageUrls : existingLocal.imageUrls)
+                  imageUrl: localHasImage
+                    ? existingLocal.imageUrl
+                    : (serverHasImage ? serverItem.imageUrl : existingLocal.imageUrl),
+                  imageUrls: localUrls.length > 0 ? localUrls : (serverUrls.length > 0 ? serverUrls : existingLocal.imageUrls)
                 });
               }
             });
-            mergedFoods = Array.from(foodUnionMap.values());
+            mergedFoods = mergeFoodLogsDeduped(Array.from(foodUnionMap.values()), []);
+            mergedFoods = rehydrateFoodImagesFromDonors(mergedFoods, filteredLocalFoods);
 
             mergedBioHistory = mergeBiomarkerHistory(filteredBioHistory, filteredLocalBioHistory, deletedBioLogs);
             mergedActions = mergeActions(acts, localActions);
@@ -2517,6 +2697,8 @@ export default function App() {
         }
 
         setProfile(sanitizeProfile(mergedProfile, activeEmail));
+        // Final safety: dedupe + rehydrate once more before React state / IndexedDB
+        mergedFoods = mergeFoodLogsDeduped(rehydrateFoodImagesFromDonors(mergedFoods, localFoods), []);
         setFoodLogs(mergedFoods);
         setBiomarkerHistory(mergedBioHistory);
         setActions(mergedActions);
@@ -2533,17 +2715,8 @@ export default function App() {
             });
           });
         setBiomarkers(computedBiomarkers);
-        // Write bundle back to local storage
-        // Ensure image data from localFoods is preserved in the bundle saved to IndexedDB
-        const foodsToCache = mergedFoods.map(mf => {
-          if (!mf.imageUrl || mf.imageUrl === '[image_removed_for_snapshot]') {
-            const local = localFoods.find(lf => lf.id === mf.id);
-            if (local && local.imageUrl && local.imageUrl !== '[image_removed_for_snapshot]') {
-              return { ...mf, imageUrl: local.imageUrl, imageUrls: local.imageUrls || mf.imageUrls };
-            }
-          }
-          return mf;
-        });
+        // Write bundle back to local storage — prefer usable images (never placeholders)
+        const foodsToCache = rehydrateFoodImagesFromDonors(mergedFoods, localFoods);
 
         const bundle = {
           profile: mergedProfile,
@@ -2913,8 +3086,12 @@ export default function App() {
           const uid = user.uid;
           if (!isDemoUser) {
             const hasSyncedThisSession = sessionStorage.getItem('synced_' + uid) === 'true';
+            // Only force a sync when there is truly nothing usable cached locally
+            // (fresh device / cleared storage / first login). A user who simply has
+            // zero biomarker entries (but real food logs) must NOT be treated as
+            // "empty" — that was forcing a full cloud re-sync on every page refresh.
             const isLocalDataEmpty = !loadedProfile?.lastUpdatedAt && loadedFoods.length === 0 && loadedHistory.length === 0;
-            
+
             if (!hasSyncedThisSession || isLocalDataEmpty) {
               console.log("[Auth] Signed in user detected. Syncing with Cloud Firestore to restore account data...");
               sessionStorage.setItem('synced_' + uid, 'true');
@@ -3060,7 +3237,7 @@ export default function App() {
                 deletedCustomKeys, 
                 activeEmail
               );
-              if (serverFoods.length > 0) setFoodLogs(prevFoods => mergeByRecency(prevFoods, serverFoods));
+              if (serverFoods.length > 0) setFoodLogs(prevFoods => mergeFoodLogsDeduped(prevFoods, serverFoods));
               if (serverBiomarkers.length > 0) setBiomarkerHistory(prevBio => mergeByRecency(prevBio, serverBiomarkers));
               if (serverProfile) setProfile(prevProfile => mergeProfiles(serverProfile, prevProfile));
               if (serverActions && serverActions.length > 0) setActions(prevActs => mergeActions(serverActions, prevActs));
@@ -3943,8 +4120,27 @@ export default function App() {
       const logWithSync = { ...compressedFood, sync_state: 'update' as const, updated_at: Date.now() };
       updatedFoods = foodLogs.map(f => f.id === compressedFood.id ? logWithSync : f);
     } else {
-      const newFood = { ...compressedFood, sync_state: 'new' as const, updated_at: Date.now() };
-      updatedFoods = [...foodLogs, newFood];
+      // Safety net: guard against rapid duplicate submissions (double-tap, SSE
+      // retry, reconnect firing twice) producing two distinct food_${Date.now()}
+      // ids for the same logical meal. Only kicks in when there's no exact id
+      // match above. Pure in-memory check against already-loaded foodLogs — no
+      // new Firebase/Supabase reads.
+      const now = Date.now();
+      const DUPLICATE_WINDOW_MS = 5 * 60 * 1000; // 5 minutes
+      const newFingerprint = foodLogFingerprint(compressedFood);
+      const recentDuplicateIndex = foodLogs.findIndex(f => {
+        if (!f.updated_at || (now - f.updated_at) > DUPLICATE_WINDOW_MS) return false;
+        return foodLogFingerprint(f) === newFingerprint;
+      });
+      if (recentDuplicateIndex !== -1) {
+        console.warn('[handleLogFood] Near-duplicate submission detected within 5 min window, updating existing entry instead of creating a new one:', newFingerprint);
+        const existing = foodLogs[recentDuplicateIndex];
+        const logWithSync = { ...existing, ...compressedFood, id: existing.id, sync_state: 'update' as const, updated_at: now };
+        updatedFoods = foodLogs.map(f => f.id === existing.id ? logWithSync : f);
+      } else {
+        const newFood = { ...compressedFood, sync_state: 'new' as const, updated_at: now };
+        updatedFoods = [...foodLogs, newFood];
+      }
     }
     setFoodLogs(updatedFoods);
     await saveAndSync(profile, updatedFoods, biomarkers, biomarkerHistory, actions, dailyBenefits, report, { type: 'foodLog', targetId: compressedFood.id });
@@ -5622,6 +5818,12 @@ export default function App() {
             foodLogs={foodLogs}
             onUpdateFoodLog={handleUpdateFoodLog}
             onDeleteFoodLog={handleDeleteFoodLog}
+            onReplaceFoodLogs={async (foods) => {
+              setFoodLogs(foods);
+              await saveAndSync(profile, foods, biomarkers, biomarkerHistory, actions, dailyBenefits, report, {
+                type: 'food',
+              } as any);
+            }}
             onLogFood={handleLogFood}
             onEditingActiveChange={setIsEditingFoodLog}
             isManualEntryOpen={isManualFoodLogOpen}
@@ -5672,9 +5874,40 @@ export default function App() {
                 profile={profile}
                 biomarkers={biomarkers}
                 biomarkerHistory={biomarkerHistory}
+                foodLogs={foodLogs}
                 hideSensitive={hideSensitive}
                 onViewJob={(jobId) => {
                   setActiveJobId(jobId);
+                }}
+                onApplyDataSanitize={async (selected: SanitizeProposal[]) => {
+                  const { applyDataSanitizePlan: applyPlan, buildDataSanitizePlan } = await import('./utils/dataSanitize');
+                  const plan = buildDataSanitizePlan({
+                    profile,
+                    biomarkers,
+                    biomarkerHistory,
+                    foodLogs,
+                  });
+                  const result = applyPlan(plan, new Set(selected.map((s) => s.id)), {
+                    profile,
+                    biomarkers,
+                    biomarkerHistory,
+                    foodLogs,
+                  });
+                  const nextProfile = { ...profile, ...result.profileUpdates };
+                  setProfile(nextProfile);
+                  setFoodLogs(result.foodLogs);
+                  setBiomarkerHistory(result.biomarkerHistory);
+                  setBiomarkers(result.biomarkers);
+                  await saveAndSync(
+                    nextProfile,
+                    result.foodLogs,
+                    result.biomarkers,
+                    result.biomarkerHistory,
+                    actions,
+                    dailyBenefits,
+                    report
+                  );
+                  console.log(`[DataSanitize] Applied ${result.applied} proposals`);
                 }}
                 onDeleteEmptyBiomarkers={handleDeleteEmptyBiomarkers}
                 onUpdateProfile={async (updates) => {
@@ -6986,14 +7219,3 @@ export default function App() {
     </div>
   );
 }
-// B2 timeout saves liveThoughts backendLogs when present
-function b2Extras() {
-  const v = null as any;
-  return v?.liveThoughts?.backendLogs + 'msg_assistant_timeout_';
-}
-
-/* serverJob.status === 'awaiting_user' */
-
-/* mergeFoodLogsDeduped rehydrateFoodImagesFromDonors MAX_IMAGE_FETCH_PER_SYNC isUsableImageUrl */
-
-/* Waiting for portion choice */

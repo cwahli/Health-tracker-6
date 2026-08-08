@@ -17,6 +17,7 @@ export interface FoodAgentExecutorInput {
   outOfRangeBiomarkers?: any[];
   remainingAllowance?: any;
   messages?: any[]; // Only what's needed for context
+  activeMeal?: any;
 }
 
 export interface FoodAgentExecutorEvent {
@@ -100,7 +101,8 @@ export async function* executeFoodAgent(input: FoodAgentExecutorInput): AsyncGen
       }
       return { role: m.role, content: m.content + extra };
     });
-    const lastFoodLog = [...messages].reverse().find(m => m.data?.pendingFoodLog)?.pendingFoodLog;
+    const lastFoodLogMsg = [...messages].reverse().find(m => m.data?.pendingFoodLog || m.pendingFoodLog);
+    const lastFoodLog = lastFoodLogMsg?.data?.pendingFoodLog || lastFoodLogMsg?.pendingFoodLog;
     if (lastFoodLog) {
       try {
         const prunedMeal = JSON.parse(JSON.stringify(lastFoodLog));
@@ -116,6 +118,10 @@ export async function* executeFoodAgent(input: FoodAgentExecutorInput): AsyncGen
         bodyData.activeMeal = lastFoodLog;
       }
     }
+  }
+
+  if (input.activeMeal) {
+    bodyData.activeMeal = input.activeMeal;
   }
 
   if (activeFoodLogs) {

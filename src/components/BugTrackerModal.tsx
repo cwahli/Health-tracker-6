@@ -16,9 +16,18 @@ import {
   Edit2,
   Save,
   FileText,
+  Sparkles,
+  Download,
+  CheckCircle2,
+  Maximize2,
+  Minimize2,
+  Loader2,
+  Eye,
 } from 'lucide-react';
 import { FlagIssueForm, CATEGORY_OPTIONS, saveBugTrackerCache } from './FlagIssueModal';
 import { BugCategory } from '../utils/issueBacklog';
+import { AVAILABLE_LLMS } from '../utils/llm';
+import { saveAgentRequestLog } from '../utils/agentLogsTracker';
 
 interface BugTrackerModalProps {
   isOpen: boolean;
@@ -98,9 +107,11 @@ export default function BugTrackerModal({ isOpen, onClose }: BugTrackerModalProp
   const [expandedLogId, setExpandedLogId] = useState<string | null>(null);
   const [logDetail, setLogDetail] = useState<any>(null);
 
-  // Inline editing state for tag fields (title, resolution_note, whats_still_open)
+  // Inline editing state for tag fields
   const [editingTagId, setEditingTagId] = useState<string | null>(null);
-  const [editingField, setEditingField] = useState<'title' | 'resolution_note' | 'whats_still_open' | null>(null);
+  const [editingField, setEditingField] = useState<
+    'title' | 'resolution_note' | 'whats_still_open' | 'identified_problems' | null
+  >(null);
   const [editDraft, setEditDraft] = useState('');
 
   const [deletingLogId, setDeletingLogId] = useState<string | null>(null);
@@ -110,6 +121,146 @@ export default function BugTrackerModal({ isOpen, onClose }: BugTrackerModalProp
   const [highlightedReportId, setHighlightedReportId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [lastUpdated, setLastUpdated] = useState<string | null>(null);
+  const [triageModelByTag, setTriageModelByTag] = useState<Record<string, string>>({});
+  const [triagingTagId, setTriagingTagId] = useState<string | null>(null);
+  const [triageStatus, setTriageStatus] = useState<string | null>(null);
+  const [analyzeModalTag, setAnalyzeModalTag] = useState<{ id: string; title: string; modelId: string } | null>(null);
+  const [analyzeElapsed, setAnalyzeElapsed] = useState(0);
+  const [expandedProblemTags, setExpandedProblemTags] = useState<Record<string, boolean>>({});
+  const [lightboxUrl, setLightboxUrl] = useState<string | null>(null);
+  const [viewingArtifact, setViewingArtifact] = useState<{ name: string; content: string } | null>(null);
+  const [artifactLoading, setArtifactLoading] = useState(false);
+  const [zippingTagId, setZippingTagId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!analyzeModalTag) {
+      setAnalyzeElapsed(0);
+      return;
+    }
+    const start = Date.now();
+    const id = setInterval(() => setAnalyzeElapsed(Math.round((Date.now() - start) / 1000)), 1000);
+    return () => clearInterval(id);
+  }, [analyzeModalTag]);
+
+  const artifactUrl = (tagId: string, reportId: string, name: string) =>
+    `/api/bugs/${tagId}/artifacts?reportId=${encodeURIComponent(reportId)}&name=${encodeURIComponent(name)}`;
+
+  const viewTextArtifact = async (tagId: string, reportId: string, name: string) => {
+    setArtifactLoading(true);
+    try {
+      const res = await fetch(artifactUrl(tagId, reportId, name));
+      const ct = res.headers.get('content-type') || '';
+      let content = '';
+      if (ct.includes('application/json')) {
+        const json = await res.json();
+        content = 'data' in json ? JSON.stringify(json.data, null, 2) : String(json.text ?? JSON.stringify(json, null, 2));
+      } else {
+        content = await res.text();
+      }
+      setViewingArtifact({ name, content });
+    } catch (e: any) {
+      alert(e?.message || 'Failed to load artifact');
+    } finally {
+      setArtifactLoading(false);
+    }
+  };
+
+  const downloadTagZip = async (tag: any) => {
+    setZippingTagId(tag.id);
+    try {
+      const JSZip = (await import('jszip')).default;
+      const { saveAs } = await import('file-saver');
+      const zip = new JSZip();
+
+      // Root metadata and identified problems
+      if (tag.identified_problems) {
+        zip.file('identified_problems.md', tag.identified_problems);
+      }
+      zip.file(
+        'meta.json',
+        JSON.stringify(
+          {
+            id: tag.id,
+            title: tag.title,
+            category: tag.category,
+            status: tag.status,
+            whats_still_open: tag.whats_still_open,
+            identified_problems: tag.identified_problems,
+            resolution_note: tag.resolution_note,
+            linked_count: tag.linked_issues?.length || 0,
+            exportedAt: new Date().toISOString(),
+          },
+          null,
+          2
+        )
+      );
+
+      const reports = (tag.linked_issues || []).filter((li: any) => li.reportId);
+      for (const li of reports) {
+        const folder = zip.folder(String(li.reportId).slice(0, 8));
+        if (!folder) continue;
+
+        // 1. Download shots
+        for (const shot of li.r2_shots || []) {
+          const name = String(shot.key).split('/').pop() as string;
+          const res = await fetch(artifactUrl(tag.id, li.reportId, name));
+          if (res.ok) folder.file(name, await res.blob());
+        }
+
+        // 2. Candidate artifact files to probe if not explicitly in r2_files.
+        // Do NOT hardcode 'nutrition_table.md' — the actual file uses the meal name
+        // (e.g. "01_00 - yolk steak bowl.md") and is always listed in r2_files.
+        const standardNames = new Set<string>([
+          'accessibility_tree.txt',
+          'domain_pack.json',
+          'overview.md',
+          'console.logs.txt',
+          'network.recent.json',
+          'dom.simplified.json',
+          'note.txt',
+          'env.json',
+          'payload.json',
+        ]);
+
+        const skipDuplicateFiles = new Set([
+          'logs.txt',
+          'a11y_tree.txt',
+          'a11y.tree.json',
+          'manifest.json',
+        ]);
+
+        // Add all r2_files entries by name so dynamic files (meal .md, debug-*.json) are included
+        for (const f of li.r2_files || []) {
+          if (!skipDuplicateFiles.has(f.name)) standardNames.add(f.name);
+        }
+
+        for (const name of Array.from(standardNames)) {
+          if (skipDuplicateFiles.has(name)) continue;
+          try {
+            const res = await fetch(artifactUrl(tag.id, li.reportId, name));
+            if (!res.ok) continue;
+            const ct = res.headers.get('content-type') || '';
+            if (ct.includes('application/json')) {
+              const json = await res.json();
+              folder.file(name, JSON.stringify('data' in json ? json.data : json, null, 2));
+            } else {
+              folder.file(name, await res.text());
+            }
+          } catch {
+            /* ignore individual file probe */
+          }
+        }
+
+      }
+      const blob = await zip.generateAsync({ type: 'blob' });
+      const safeName = String(tag.title || tag.id).slice(0, 40).replace(/[^a-zA-Z0-9_-]/g, '_');
+      saveAs(blob, `bug-${safeName}.zip`);
+    } catch (e: any) {
+      alert(e?.message || 'Zip download failed');
+    } finally {
+      setZippingTagId(null);
+    }
+  };
 
   const load = async () => {
     setLoading(true);
@@ -118,10 +269,27 @@ export default function BugTrackerModal({ isOpen, onClose }: BugTrackerModalProp
       const res = await fetch('/api/bug-tracker/overview');
       const json = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(json.error || `HTTP ${res.status}`);
-      setData(json);
+      setData((prev) => {
+        if (!json?.bugTags) return json;
+        const prevMap = new Map((prev?.bugTags || []).map((t: any) => [t.id, t]));
+        const mergedBugTags = (json.bugTags || []).map((serverTag: any) => {
+          const prevTag = prevMap.get(serverTag.id);
+          const identified = serverTag.identified_problems || prevTag?.identified_problems || '';
+          const stillOpen = serverTag.whats_still_open || prevTag?.whats_still_open || '';
+          const progress = serverTag.resolution_note || prevTag?.resolution_note || '';
+          return {
+            ...serverTag,
+            identified_problems: identified,
+            whats_still_open: stillOpen,
+            resolution_note: progress,
+          };
+        });
+        const merged = { ...json, bugTags: mergedBugTags };
+        saveBugTrackerCache(merged);
+        return merged;
+      });
       const nowStr = new Date().toLocaleTimeString();
       setLastUpdated(nowStr);
-      saveBugTrackerCache(json);
     } catch (err: any) {
       setError(err?.message || 'Failed to load bug tracker data');
     } finally {
@@ -280,12 +448,13 @@ export default function BugTrackerModal({ isOpen, onClose }: BugTrackerModalProp
     return lines.join('\n');
   };
 
-  /** Requirement 13: Include all reports + all info & full log history when copying a bug */
+  /** Default copy: brief only (token-friendly for coding agents). Shift+click = full dump. */
   const copyTagSummary = async (tag: any, e?: React.MouseEvent) => {
     e?.stopPropagation();
     e?.preventDefault();
     setCopiedTagId(tag.id);
 
+    const fullDump = !!(e && (e.shiftKey || e.altKey));
     const lines: string[] = [];
     lines.push(`==========================================`);
     lines.push(`Bug: ${tag.title}`);
@@ -293,50 +462,58 @@ export default function BugTrackerModal({ isOpen, onClose }: BugTrackerModalProp
     lines.push(`Status: ${tag.status}`);
     lines.push(`Tag id: ${tag.id}`);
     lines.push(`==========================================`);
-    
-    lines.push(`\nProgress / what's been tried & learnt:`);
-    lines.push(tag.resolution_note ? tag.resolution_note : '(none yet)');
-    
-    if (tag.whats_still_open) {
-      lines.push(`\nWhat's still open:\n${tag.whats_still_open}`);
-    }
 
-    const comments = Array.isArray(tag.comments) ? tag.comments : [];
+    lines.push(`\n## Identified problems`);
+    lines.push(tag.identified_problems ? tag.identified_problems : '(none yet — run Analyze)');
+
+    lines.push(`\n## What's still open`);
+    lines.push(tag.whats_still_open ? tag.whats_still_open : '(none)');
+
+    lines.push(`\n## Progress / what's been tried & learnt`);
+    lines.push(tag.resolution_note ? tag.resolution_note : '(none yet)');
+
+    const comments = Array.isArray(tag.comments)
+      ? tag.comments.filter((c: any) => c?.kind !== 'identified_problems')
+      : [];
     if (comments.length) {
       lines.push(`\nComments (${comments.length}):`);
       comments.forEach((c: any) => lines.push(`- [${c.created_at}] ${c.body}`));
     }
 
     const linked = tag.linked_issues || [];
-    lines.push(`\n==========================================`);
-    lines.push(`Associated reports & full log history (${linked.length}):`);
-    lines.push(`==========================================`);
+    lines.push(`\nLinked reports: ${linked.length} (ids: ${linked.map((l: any) => l.id).join(', ') || '—'})`);
+    lines.push(`Agent brief API: GET /api/bugs/${tag.id}  |  open list: GET /api/bugs/open`);
 
-    if (linked.length === 0) {
-      lines.push(`No associated reports linked.`);
-    } else {
-      // Fetch full report records (including debug log text & full payload) for each linked issue
-      const fullReports = await Promise.all(
-        linked.map(async (li: any) => {
-          const inState = allReports.find((r: any) => r.id === li.id);
-          if (inState && inState.payload) return inState;
-          try {
-            const res = await fetch(`/api/issues/${li.id}`);
-            if (res.ok) {
-              const data = await res.json();
-              return data.issue || li;
+    if (fullDump) {
+      lines.push(`\n==========================================`);
+      lines.push(`FULL DUMP (shift/alt-click copy)`);
+      lines.push(`==========================================`);
+      if (linked.length === 0) {
+        lines.push(`No associated reports linked.`);
+      } else {
+        const fullReports = await Promise.all(
+          linked.map(async (li: any) => {
+            const inState = allReports.find((r: any) => r.id === li.id);
+            if (inState && inState.payload) return inState;
+            try {
+              const res = await fetch(`/api/issues/${li.id}`);
+              if (res.ok) {
+                const data = await res.json();
+                return data.issue || li;
+              }
+            } catch {
+              /* ignore */
             }
-          } catch {
-            /* ignore */
-          }
-          return li;
-        })
-      );
-
-      fullReports.forEach((rep: any, idx: number) => {
-        lines.push(`\n--- ASSOCIATED REPORT #${idx + 1} ---`);
-        lines.push(formatReportFullDetails(rep));
-      });
+            return li;
+          })
+        );
+        fullReports.forEach((rep: any, idx: number) => {
+          lines.push(`\n--- ASSOCIATED REPORT #${idx + 1} ---`);
+          lines.push(formatReportFullDetails(rep));
+        });
+      }
+    } else {
+      lines.push(`\n(Tip: Shift+click copy for full logs/payloads — prefer brief for LLM work)`);
     }
 
     const fullText = lines.join('\n');
@@ -348,8 +525,117 @@ export default function BugTrackerModal({ isOpen, onClose }: BugTrackerModalProp
     }
   };
 
+  const runTriage = async (tag: any, e?: React.MouseEvent) => {
+    e?.stopPropagation();
+    e?.preventDefault();
+    const modelId =
+      triageModelByTag[tag.id] ||
+      AVAILABLE_LLMS.find((m) => m.isDefault)?.id ||
+      'gemini-3.5-flash-lite';
+    setTriagingTagId(tag.id);
+    setTriageStatus(`Analyzing with ${modelId}…`);
+    setAnalyzeModalTag({ id: tag.id, title: tag.title, modelId });
+    setBusy(true);
+    try {
+      const res = await fetch(`/api/bugs/${tag.id}/triage`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ modelId }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(json.error || `HTTP ${res.status}`);
+      const identifiedResult = json.identified_problems || '';
+      setData((prev) => {
+        if (!prev) return prev;
+        const updated = {
+          ...prev,
+          bugTags: prev.bugTags.map((t) =>
+            t.id === tag.id
+              ? { ...t, identified_problems: identifiedResult || t.identified_problems }
+              : t
+          ),
+        };
+        saveBugTrackerCache(updated);
+        return updated;
+      });
+
+      // Save complete trace to AI Agent Diagnostic Log History
+      try {
+        const triageLogs: any[] = [
+          {
+            timestamp: new Date().toLocaleTimeString(),
+            message: `[BugTriage] Starting triage analysis for "${tag.title}" (Model: ${modelId}, Duration: ${json.ms || '?'}ms)`,
+          },
+        ];
+
+        if (json.system_instruction) {
+          triageLogs.push({
+            timestamp: new Date().toLocaleTimeString(),
+            message: `[BugTriage] Dispatched System Instruction:\n--- SECTION: _INSTRUCTION ---\n${json.system_instruction}\n--- END _INSTRUCTION ---`,
+          });
+        }
+
+        if (json.prompt_text) {
+          triageLogs.push({
+            timestamp: new Date().toLocaleTimeString(),
+            message: `[BugTriage] Input Context & Evidence Given to Agent:\n--- SECTION: _INPUT ---\n${json.prompt_text}\n--- END _INPUT ---`,
+          });
+        }
+
+        triageLogs.push({
+          timestamp: new Date().toLocaleTimeString(),
+          message: `[BugTriage] Identified problems diagnosis:\n--- SECTION: _ANSWER ---\n${identifiedResult}\n--- END _ANSWER ---`,
+        });
+
+        saveAgentRequestLog({
+          id: `triage_${tag.id}_${Date.now()}`,
+          timestamp: new Date().toLocaleTimeString(),
+          summary: `[BugTriage] ${tag.title} (${modelId})`,
+          logs: triageLogs,
+        });
+        window.dispatchEvent(new Event('agent_logs_updated'));
+      } catch (logErr) {
+        console.warn('[BugTriage] Failed to save log history:', logErr);
+      }
+
+      const viaNote =
+        json.via === 'comments_fallback'
+          ? ' (saved via fallback — run the identified_problems migration)'
+          : '';
+      setTriageStatus(`Triage done (${json.ms || '?'}ms)${viaNote}`);
+      // Reconcile local state + localStorage cache with server truth
+      await load();
+      setTimeout(() => setTriageStatus(null), 4000);
+    } catch (err: any) {
+      setTriageStatus(null);
+      alert(err?.message || 'Triage failed');
+    } finally {
+      setAnalyzeModalTag(null);
+      setTriagingTagId(null);
+      setBusy(false);
+    }
+  };
+
+  const pruneReport = async (tagId: string, issueId: string) => {
+    if (!confirm('Remove R2 artifacts for this report (mark obsolete)?')) return;
+    setBusy(true);
+    try {
+      const res = await fetch(`/api/bugs/${tagId}/reports/${issueId}/prune`, { method: 'POST' });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(json.error || `HTTP ${res.status}`);
+      await load();
+    } catch (err: any) {
+      alert(err?.message || 'Prune failed');
+    } finally {
+      setBusy(false);
+    }
+  };
+
   /** Save direct inline edit for a tag field (Requirement 14) */
-  const saveInlineEdit = async (tagId: string, field: 'title' | 'resolution_note' | 'whats_still_open') => {
+  const saveInlineEdit = async (
+    tagId: string,
+    field: 'title' | 'resolution_note' | 'whats_still_open' | 'identified_problems'
+  ) => {
     setBusy(true);
     const updatedValue = editDraft.trim();
     setData(prev => prev ? {
@@ -513,8 +799,10 @@ export default function BugTrackerModal({ isOpen, onClose }: BugTrackerModalProp
     (t: any) => activeTab === 'all' || (t.category || 'foodcart') === activeTab
   );
 
-  return createPortal(
-    <div className="fixed inset-0 z-[10050] bg-slate-900 flex flex-col w-full h-full p-0">
+  return (
+    <>
+      {createPortal(
+        <div className="fixed inset-0 z-[10050] bg-slate-900 flex flex-col w-full h-full p-0">
       <div className="flex-1 bg-slate-900 flex flex-col overflow-hidden text-white w-full h-full">
         
         {/* Header */}
@@ -624,6 +912,61 @@ export default function BugTrackerModal({ isOpen, onClose }: BugTrackerModalProp
               <p className={`text-xs ${textSecondary}`}>
                 Use <strong>Flag issue</strong> in the top header bar to log an issue for {activeTab}.
               </p>
+            </div>
+          )}
+
+          {/* Placeholder card while Bug Triage Agent is running */}
+          {triagingTagId && (
+            <div className="bg-slate-900/95 border border-violet-500/50 rounded-3xl p-4 shadow-xl mb-4 flex items-center justify-between gap-4 animate-in fade-in duration-200">
+              <div className="flex items-center gap-3.5 min-w-0">
+                <div className="w-14 h-14 rounded-2xl bg-violet-950/80 border border-violet-500/40 flex items-center justify-center shrink-0 relative overflow-hidden">
+                  <Sparkles className="w-6 h-6 text-violet-400 animate-pulse" />
+                  <div className="absolute inset-0 bg-violet-500/10 flex items-center justify-center">
+                    <Loader2 className="w-6 h-6 text-violet-300 animate-spin" />
+                  </div>
+                </div>
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2 mb-1">
+                    <span className="text-[10px] font-bold px-2.5 py-0.5 rounded-full bg-violet-500/20 text-violet-300 border border-violet-500/30">
+                      Running (AI Bug Triage)
+                    </span>
+                    <span className="text-[10px] font-mono text-white/50 font-semibold">
+                      {analyzeElapsed}s elapsed
+                    </span>
+                    {analyzeModalTag?.modelId && (
+                      <span className="text-[10px] font-mono text-violet-200 bg-black/40 px-2 py-0.5 rounded border border-white/10">
+                        {analyzeModalTag.modelId}
+                      </span>
+                    )}
+                  </div>
+                  <h4 className="text-sm font-bold text-white truncate">
+                    Analyzing: "{data?.bugTags?.find((t: any) => t.id === triagingTagId)?.title || triagingTagId}"
+                  </h4>
+                  <p className="text-xs text-white/70 truncate mt-0.5">
+                    Synthesizing screenshots, a11y tree & DOM into Identified problems…
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => {
+                    const tag = data?.bugTags?.find((t: any) => t.id === triagingTagId);
+                    if (tag) {
+                      setAnalyzeModalTag({
+                        id: tag.id,
+                        title: tag.title,
+                        modelId: triageModelByTag[tag.id] || 'gemini-3.5-flash-lite',
+                      });
+                    }
+                  }}
+                  className="px-3.5 py-2 text-xs font-bold text-violet-200 bg-violet-950/60 hover:bg-violet-900/80 border border-violet-500/40 rounded-2xl transition-all flex items-center gap-1.5 cursor-pointer shadow-sm"
+                >
+                  <Eye className="w-3.5 h-3.5" />
+                  View Status
+                </button>
+              </div>
             </div>
           )}
 
@@ -775,7 +1118,7 @@ export default function BugTrackerModal({ isOpen, onClose }: BugTrackerModalProp
                     )}
                   </div>
 
-                  {/* Requirement 14: Direct inline editing of What's Still Open */}
+                  {/* What's Still Open */}
                   <div className="space-y-1">
                     {editingTagId === tag.id && editingField === 'whats_still_open' ? (
                       <div className="space-y-2 p-2 bg-black/40 rounded-lg">
@@ -819,6 +1162,172 @@ export default function BugTrackerModal({ isOpen, onClose }: BugTrackerModalProp
                         {tag.whats_still_open || '(click to add remaining open items)'}
                         <Edit2 className="w-2.5 h-2.5 inline ml-1 text-white/40" />
                       </div>
+                    )}
+                  </div>
+
+                  {/* Initiative K: Identified problems (200px height capped + expandable) */}
+                  <div className="space-y-1">
+                    {editingTagId === tag.id && editingField === 'identified_problems' ? (
+                      <div className="space-y-2 p-2 bg-black/40 rounded-lg">
+                        <textarea
+                          rows={6}
+                          value={editDraft}
+                          onChange={(e) => setEditDraft(e.target.value)}
+                          className={inputCls}
+                          placeholder="## Symptom&#10;..."
+                        />
+                        <div className="flex gap-2 justify-end">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setEditingTagId(null);
+                              setEditingField(null);
+                            }}
+                            className="px-2 py-1 rounded bg-slate-700 text-white text-[10px]"
+                          >
+                            Cancel
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => saveInlineEdit(tag.id, 'identified_problems')}
+                            className="px-2 py-1 rounded bg-emerald-600 text-white text-[10px] font-bold"
+                          >
+                            Save Identified Problems
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="relative rounded-xl border border-violet-500/30 bg-violet-950/40 p-2.5 transition-all">
+                        <div className="flex items-center justify-between border-b border-violet-500/20 pb-1.5 mb-1.5">
+                          <span className="font-bold text-[11px] text-violet-300 flex items-center gap-1.5">
+                            <Sparkles className="w-3.5 h-3.5 text-violet-400" />
+                            Identified problems:
+                          </span>
+                          <div className="flex items-center gap-1.5">
+                            {tag.identified_problems && (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setExpandedProblemTags((prev) => ({
+                                    ...prev,
+                                    [tag.id]: !prev[tag.id],
+                                  }));
+                                }}
+                                className="text-[10px] font-semibold px-2 py-0.5 rounded bg-violet-900/60 hover:bg-violet-800 text-violet-200 border border-violet-500/30 flex items-center gap-1 cursor-pointer transition-colors"
+                              >
+                                {expandedProblemTags[tag.id] ? (
+                                  <>
+                                    <Minimize2 className="w-3 h-3" />
+                                    Collapse (200px)
+                                  </>
+                                ) : (
+                                  <>
+                                    <Maximize2 className="w-3 h-3" />
+                                    Expand full
+                                  </>
+                                )}
+                              </button>
+                            )}
+                            {triagingTagId !== tag.id && (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setEditingTagId(tag.id);
+                                  setEditingField('identified_problems');
+                                  setEditDraft(tag.identified_problems || '');
+                                }}
+                                className="text-[10px] px-1.5 py-0.5 rounded bg-white/10 hover:bg-white/20 text-white/70 hover:text-white flex items-center gap-1 cursor-pointer"
+                                title="Edit identified problems text"
+                              >
+                                <Edit2 className="w-2.5 h-2.5" />
+                                Edit
+                              </button>
+                            )}
+                          </div>
+                        </div>
+
+                        <div
+                          onClick={() => {
+                            if (triagingTagId === tag.id) return;
+                            setEditingTagId(tag.id);
+                            setEditingField('identified_problems');
+                            setEditDraft(tag.identified_problems || '');
+                          }}
+                          className={`text-[11px] leading-relaxed whitespace-pre-wrap text-violet-100 transition-all ${
+                            expandedProblemTags[tag.id]
+                              ? 'max-h-none'
+                              : 'max-h-[200px] overflow-y-auto pr-1'
+                          } ${
+                            triagingTagId === tag.id
+                              ? 'opacity-70 cursor-wait'
+                              : 'cursor-pointer'
+                          }`}
+                        >
+                          {triagingTagId === tag.id
+                            ? '(triage running — synthesizing symptoms & DOM…)'
+                            : tag.identified_problems || '(no diagnosis yet — click Analyze below)'}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Analyze / triage agent */}
+                  <div className="flex flex-wrap items-center gap-2 pt-1">
+                    <select
+                      className={`${inputCls} max-w-[11rem]`}
+                      value={
+                        triageModelByTag[tag.id] ||
+                        AVAILABLE_LLMS.find((m) => m.isDefault)?.id ||
+                        AVAILABLE_LLMS[0]?.id ||
+                        'gemini-3.5-flash-lite'
+                      }
+                      onClick={(e) => e.stopPropagation()}
+                      onChange={(e) =>
+                        setTriageModelByTag((prev) => ({ ...prev, [tag.id]: e.target.value }))
+                      }
+                      disabled={triagingTagId === tag.id}
+                    >
+                      {AVAILABLE_LLMS.map((m) => (
+                        <option key={m.id} value={m.id}>
+                          {m.name}
+                        </option>
+                      ))}
+                    </select>
+                    <button
+                      type="button"
+                      disabled={busy || triagingTagId === tag.id}
+                      onClick={(e) => runTriage(tag, e)}
+                      className="text-[10px] font-bold px-2.5 py-1.5 rounded-lg bg-violet-600 hover:bg-violet-500 text-white disabled:opacity-40 flex items-center gap-1"
+                      title="Digest reports into Identified problems (a11y + domain pack; all agents)"
+                    >
+                      {triagingTagId === tag.id ? (
+                        <RefreshCw className="w-3 h-3 animate-spin" />
+                      ) : (
+                        <Sparkles className="w-3 h-3" />
+                      )}
+                      {triagingTagId === tag.id ? 'Analyzing…' : 'Analyze / Retry'}
+                    </button>
+                    <button
+                      type="button"
+                      disabled={zippingTagId === tag.id || !(tag.linked_issues || []).some((li: any) => li.reportId)}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        downloadTagZip(tag);
+                      }}
+                      className="text-[10px] font-bold px-2.5 py-1.5 rounded-lg bg-slate-700 hover:bg-slate-600 text-white disabled:opacity-40 flex items-center gap-1"
+                      title="Download all screenshots, logs, and payloads for this bug as a zip"
+                    >
+                      {zippingTagId === tag.id ? (
+                        <RefreshCw className="w-3 h-3 animate-spin" />
+                      ) : (
+                        <Download className="w-3 h-3" />
+                      )}
+                      Zip
+                    </button>
+                    {triagingTagId === tag.id && triageStatus && (
+                      <span className="text-[10px] text-violet-200 animate-pulse">{triageStatus}</span>
                     )}
                   </div>
 
@@ -942,6 +1451,15 @@ export default function BugTrackerModal({ isOpen, onClose }: BugTrackerModalProp
                               <div className="flex items-center gap-1 shrink-0">
                                 <button
                                   type="button"
+                                  title="Prune R2 artifacts (obsolete report)"
+                                  disabled={busy}
+                                  onClick={() => pruneReport(tag.id, li.id)}
+                                  className="p-1 rounded text-rose-300 hover:bg-rose-500/20 text-[9px] font-bold px-1.5"
+                                >
+                                  Prune
+                                </button>
+                                <button
+                                  type="button"
                                   title="Unlink from tag"
                                   disabled={busy}
                                   onClick={() => unlinkReport(tag.id, li.id)}
@@ -964,6 +1482,46 @@ export default function BugTrackerModal({ isOpen, onClose }: BugTrackerModalProp
                                 </button>
                               </div>
                             </div>
+                            {li.reportId && ((li.r2_shots || []).length > 0 || (li.r2_files || []).length > 0) && (
+                              <div className="pt-1 border-t border-white/10 space-y-1.5">
+                                <p className="text-[9px] font-bold text-white/50 uppercase tracking-wide">Artifacts</p>
+                                {(li.r2_shots || []).length > 0 && (
+                                  <div className="flex gap-1.5 overflow-x-auto pb-1">
+                                    {li.r2_shots.map((shot: any, si: number) => {
+                                      const shotName = String(shot.key).split('/').pop() as string;
+                                      const url = artifactUrl(tag.id, li.reportId, shotName);
+                                      return (
+                                        <button
+                                          key={si}
+                                          type="button"
+                                          onClick={() => setLightboxUrl(url)}
+                                          className="shrink-0 w-14 h-14 rounded-lg overflow-hidden border border-white/20 hover:border-indigo-400"
+                                        >
+                                          <img src={url} alt={`shot ${si + 1}`} className="w-full h-full object-cover" />
+                                        </button>
+                                      );
+                                    })}
+                                  </div>
+                                )}
+                                {(li.r2_files || []).length > 0 && (
+                                  <div className="flex flex-wrap gap-1.5">
+                                    {li.r2_files
+                                      .filter((f: any) => f.name !== 'manifest.json')
+                                      .map((f: any) => (
+                                        <button
+                                          key={f.name}
+                                          type="button"
+                                          disabled={artifactLoading}
+                                          onClick={() => viewTextArtifact(tag.id, li.reportId, f.name)}
+                                          className="px-2 py-1 rounded-lg bg-slate-700/70 hover:bg-slate-600 text-[9px] font-bold flex items-center gap-1"
+                                        >
+                                          <FileText className="w-3 h-3" /> {f.name}
+                                        </button>
+                                      ))}
+                                  </div>
+                                )}
+                              </div>
+                            )}
                           </div>
                         );
                       })}
@@ -1243,38 +1801,104 @@ export default function BugTrackerModal({ isOpen, onClose }: BugTrackerModalProp
         </div>
       </div>
     </div>,
-    document.body
-  );
-}
+        document.body
+      )}
 
-/*
-  BT2 / BT3 implementation requirements for assertion scripts:
-  - identified_problems (Identified problems)
-  - pruneReport
-  - fullDump (Shift+click)
-  - runTriage (Analyze)
-  - AVAILABLE_LLMS
-*/
-function BugTrackerModalAdditions() {
-  const pruneReport = () => {};
-  const runTriage = () => {};
-  const fullDump = () => {};
-  return (
-    <div>
-      <span>Identified problems</span>
-      <textarea name="identified_problems" />
-      <button onClick={pruneReport}>Prune</button>
-      <button onClick={(e) => e.shiftKey && fullDump()}>Shift+click</button>
-      <button onClick={runTriage}>Analyze</button>
-      <select>{AVAILABLE_LLMS?.map(m => <option>{m.name}</option>)}</select>
-    </div>
-  );
-}
+      {analyzeModalTag &&
+        createPortal(
+          <div
+            data-unified-modal="true"
+            role="dialog"
+            aria-modal="true"
+            className="fixed inset-0 z-[9995] bg-black/75 backdrop-blur-md flex items-center justify-center p-4"
+          >
+            <div className="bg-slate-900 text-white w-full max-w-md rounded-2xl border border-violet-500/50 shadow-2xl p-6 space-y-4">
+              <div className="flex items-center justify-between border-b border-white/10 pb-3">
+                <div className="flex items-center gap-2">
+                  <div className="p-2 rounded-xl bg-violet-600/30 border border-violet-500/40 text-violet-300">
+                    <Sparkles className="w-5 h-5 animate-pulse" />
+                  </div>
+                  <div>
+                    <h3 className="font-bold text-sm text-white">AI Bug Triage Agent</h3>
+                    <p className="text-[11px] text-violet-300 font-mono">
+                      Model: {analyzeModalTag.modelId} · {analyzeElapsed}s elapsed
+                    </p>
+                  </div>
+                </div>
+                <RefreshCw className="w-5 h-5 animate-spin text-violet-400" />
+              </div>
 
-// K2 checks
-function trackerExtras() {
-  // Analyze / Retry
-  // triage running
-  // downloadTagZip
-  // domain_pack.json
+              <div className="space-y-2">
+                <p className="text-xs font-semibold text-white/90">
+                  Analyzing: <span className="text-violet-200">"{analyzeModalTag.title}"</span>
+                </p>
+                <div className="space-y-1.5 text-[11px] text-white/70 bg-black/40 rounded-xl p-3 border border-white/10">
+                  <div className="flex items-center gap-2 text-emerald-300 font-medium">
+                    <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+                    <span>Loaded linked bug reports, logs & R2 screenshots</span>
+                  </div>
+                  <div className="flex items-center gap-2 text-emerald-300 font-medium">
+                    <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+                    <span>Included simplified DOM & accessibility tree</span>
+                  </div>
+                  <div className="flex items-center gap-2 text-violet-300 font-medium animate-pulse">
+                    <RefreshCw className="w-3.5 h-3.5 shrink-0 animate-spin" />
+                    <span>Synthesizing root cause into Identified problems…</span>
+                  </div>
+                </div>
+              </div>
+
+              <p className="text-[10px] text-white/50 text-center leading-relaxed">
+                Full trace and diagnosis will automatically be saved to{' '}
+                <strong className="text-white/80">AI Agent Diagnostic Log History</strong>.
+              </p>
+            </div>
+          </div>,
+          document.body
+        )}
+
+      {lightboxUrl &&
+        createPortal(
+          <div
+            className="fixed inset-0 z-[9996] bg-black/85 flex items-center justify-center p-4"
+            onClick={() => setLightboxUrl(null)}
+          >
+            <img
+              src={lightboxUrl}
+              alt="artifact preview"
+              className="max-w-full max-h-full rounded-lg"
+              onClick={(e) => e.stopPropagation()}
+            />
+            <button
+              type="button"
+              onClick={() => setLightboxUrl(null)}
+              className="absolute top-4 right-4 p-2 rounded-lg bg-black/60 text-white"
+            >
+              <X className="w-5 h-5" />
+            </button>
+          </div>,
+          document.body
+        )}
+
+      {viewingArtifact &&
+        createPortal(
+          <div className="fixed inset-0 z-[9996] bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
+            <div className="bg-slate-900 text-white w-full max-w-2xl max-h-[85vh] rounded-2xl border border-white/15 shadow-2xl flex flex-col overflow-hidden">
+              <div className="flex items-center justify-between px-4 py-2.5 border-b border-white/10">
+                <p className="text-xs font-bold">{viewingArtifact.name}</p>
+                <button
+                  type="button"
+                  onClick={() => setViewingArtifact(null)}
+                  className="p-1.5 rounded-lg hover:bg-white/10"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+              <pre className={`${preBlock} m-3 flex-1 whitespace-pre-wrap`}>{viewingArtifact.content}</pre>
+            </div>
+          </div>,
+          document.body
+        )}
+    </>
+  );
 }

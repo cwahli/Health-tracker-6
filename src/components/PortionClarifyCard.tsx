@@ -127,4 +127,5 @@ export function PortionClarifyCard({ portionClarify, onConfirm, disabled }: Prop
   );
 }
 
-/* Continue with these portions weightGrams */
+export default PortionClarifyCard;
+

@@ -1,4 +1,5 @@
 import { trackApiCall } from '../utils/apiTracker';
+import { getAgentRequestLogs } from '../utils/agentLogsTracker';
 import React, { useState, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { UserProfile, DbInteraction, QuotaData, FoodLog } from '../types';
@@ -991,27 +992,28 @@ export default function Header({
   };
 
   useEffect(() => {
-    let interval: any;
-    if (showAgentLogs) {
-      const fetchLogs = async () => {
-        try {
-          const res = await fetch('/api/gemini/debug-logs', {
-            headers: { 'X-Session-ID': 'global' }
-          });
-          if (res.ok) {
-            const data = await res.json();
-            if (data && Array.isArray(data.logs)) {
-              setAgentLogs(data.logs);
-            }
-          }
-        } catch (e) {}
-      };
-      fetchLogs();
-      interval = setInterval(fetchLogs, 1500);
-    }
-    return () => {
-      if (interval) clearInterval(interval);
+    if (!showAgentLogs) return;
+    // Read from localStorage immediately on open — no polling needed
+    const readLocalLogs = () => {
+      const saved = getAgentRequestLogs();
+      if (Array.isArray(saved) && saved.length > 0) {
+        const flat = saved.flatMap((req: any) =>
+          Array.isArray(req.logs)
+            ? req.logs.map((l: any) => ({ timestamp: l.timestamp || req.timestamp, message: l.message }))
+            : [{ timestamp: req.timestamp, message: req.summary || JSON.stringify(req) }]
+        );
+        if (flat.length > 0) { setAgentLogs(flat); return; }
+      }
+      // Fallback: one-shot server fetch (no polling interval)
+      fetch('/api/gemini/debug-logs', { headers: { 'X-Session-ID': 'global' } })
+        .then((r) => r.ok ? r.json() : null)
+        .then((data) => { if (data?.logs) setAgentLogs(data.logs); })
+        .catch(() => {});
     };
+    readLocalLogs();
+    // Re-read whenever new logs are saved (event fired inside saveAgentRequestLog)
+    window.addEventListener('agent_logs_updated', readLocalLogs);
+    return () => window.removeEventListener('agent_logs_updated', readLocalLogs);
   }, [showAgentLogs]);
 
   const handleClearAgentLogs = async () => {
@@ -1276,7 +1278,19 @@ export default function Header({
           <div className="min-w-0 flex-1">
             <div className="flex flex-col justify-center">
               <div className="flex items-center gap-1.5">
-                <span id="user-nickname-text" className="font-semibold text-theme-text truncate text-base leading-tight">
+                <span
+                  id="user-nickname-text"
+                  className={`font-semibold text-theme-text truncate text-base leading-tight ${isAdmin ? 'cursor-pointer hover:text-rose-500' : ''}`}
+                  title={isAdmin ? 'Admin: open bug snapshot capture' : undefined}
+                  onClick={() => {
+                    if (!isAdmin) return;
+                    try {
+                      document.getElementById('bug-snapshot-fab')?.click();
+                    } catch {
+                      /* ignore */
+                    }
+                  }}
+                >
                   {profile.nickname || 'Healthy User'}
                 </span>
                 {(() => {
@@ -1446,6 +1460,54 @@ export default function Header({
         isOpen={showBugTracker}
         onClose={() => setShowBugTracker(false)}
       />
+      {isAdmin && (
+        <BugSnapshotFab
+          isAdmin={isAdmin}
+          firebaseUid={auth.currentUser?.uid || null}
+          activeTab={activeTab}
+          biomarkerHistory={biomarkerHistory}
+          biomarkers={biomarkers}
+          profile={profile}
+          getModalContext={() => {
+            try {
+              const jobs = JobStore.getAllJobs?.() || [];
+              // Sort by ID descending (IDs are timestamp-prefixed) and exclude bug_triage stubs
+              const candidates = [...jobs]
+                .filter((j) =>
+                  j.kind !== 'bug_triage' &&
+                  !String(j.id).startsWith('triage_') &&
+                  !String(j.id).startsWith('bug_triage_')
+                )
+                .sort((a, b) => String(b.id).localeCompare(String(a.id)));
+              const active =
+                candidates.find((j) => j.status === 'running' || j.status === 'awaiting_user') ||
+                candidates.find((j) => j.status === 'succeeded' || j.status === 'failed') ||
+                candidates[0];
+              if (!active) return { activeTab, jobsCount: jobs.length };
+              return {
+                activeTab,
+                jobId: active.id,
+                kind: active.kind,
+                mode: active.mode || active.inputSnapshot?.mode,
+                status: active.status,
+                progressPercent: active.progressPercent,
+                result: active.result,
+                pendingFoodLog: active.result?.pendingFoodLog || active.result?.data?.pendingFoodLog,
+                backendLogs:
+                  active.result?.backendLogs ||
+                  active.liveThoughts?.backendLogs ||
+                  undefined,
+                pipelineErrors: active.result?.pipelineErrors,
+                scoutItems: active.result?.scoutItems,
+                photoUrl: active.photoUrl || active.result?.photoUrl,
+                debugUrl: active.result?.debugUrl || active.debugUrl,
+              };
+            } catch {
+              return { activeTab };
+            }
+          }}
+        />
+      )}
     </header>
 
 
@@ -3274,8 +3336,12 @@ export default function Header({
             {/* Content area */}
             <div className="p-6 overflow-y-auto space-y-6 text-left flex-1">
               
+              {/* Initiative K: bug snapshot kill-switch (admin) */}
+              {isAdmin && (
+                <BugSnapshotSettingsToggle />
+              )}
+
               {/* Undo & Snapshots Control inside Settings */}
-              <BugSnapshotSettingsToggle />
               {onOpenUndo && (
                 <div className="p-3.5 bg-amber-50/70 dark:bg-amber-950/25 border border-amber-200/80 dark:border-amber-800/50 rounded-2xl flex items-center justify-between shadow-xs">
                   <div>
@@ -4398,19 +4464,6 @@ export default function Header({
       <BugTrackerModal
         isOpen={showBugTracker}
         onClose={() => setShowBugTracker(false)}
-      />
-      <BugSnapshotFab id="bug-snapshot-fab"
-        isAdmin={profile?.email?.toLowerCase().trim() === 'cwah.liu@gmail.com' || false}
-        firebaseUid={auth.currentUser?.uid}
-        activeTab={activeTab}
-        profile={profile}
-        biomarkers={biomarkers}
-        biomarkerHistory={biomarkerHistory}
-        getModalContext={async () => {
-          const allJobs = JobStore.getAllJobs();
-          const pendingFoodLog = allJobs[0]?.result?.pendingFoodLog || foodLogs?.[0] || null;
-          return { pendingFoodLog, activeTab, timestamp: Date.now() };
-        }}
       />
     </>
   );

@@ -116,7 +116,3 @@ export function resolveMealImageCandidates(input: {
 }
 
 export const IMAGE_PRESERVE_LOG = '[ImagePreserve]';
-
-/* normalizeMealImageUrl .r2.dev/photos/ PHOTO_PROXY_PREFIX export function nextPhotoFallbackUrl export function photoKeyFromUrl */
-
-/* export function isUsableImageUrl image_removed_for_snapshot /photos/ nextPhotoFallbackUrl .r2.dev/photos/ PHOTO_PROXY_PREFIX export function resolveMealImageCandidates */

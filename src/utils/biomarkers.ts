@@ -567,6 +567,24 @@ export const categoryLabels: { [key: string]: { [lang: string]: string } } = {
   hormones: { en: 'Endocrine Hormones', fr: 'Hormones Endocriniennes', zh: '内分泌与激素', id: 'Hormon Endokrin' },
   vitamins: { en: 'Vitamins & Micronutrients', fr: 'Vitamines & Micronutriments', zh: '维生素与微量元素', id: 'Vitamin & Mikro' }
 };
+export function parseNormalRangeBounds(normalRangeStr?: string): { min?: number; max?: number } {
+  if (!normalRangeStr) return {};
+  const s = String(normalRangeStr).trim();
+  const rangeMatch = s.match(/([\d.]+)\s*-\s*([\d.]+)/);
+  if (rangeMatch) {
+    return { min: parseFloat(rangeMatch[1]), max: parseFloat(rangeMatch[2]) };
+  }
+  const underMatch = s.match(/(?:under|<|aim\s+under|<=)\s*([\d.]+)/i);
+  if (underMatch) {
+    return { max: parseFloat(underMatch[1]) };
+  }
+  const overMatch = s.match(/(?:over|>|aim\s+over|>=)\s*([\d.]+)/i);
+  if (overMatch) {
+    return { min: parseFloat(overMatch[1]) };
+  }
+  return {};
+}
+
 export function isBiomarkerValueImprobable(key: string, val: number | string, normalRangeStr?: string): boolean {
   const num = typeof val === 'number' ? val : parseFloat(String(val));
   if (isNaN(num)) return false;
@@ -579,11 +597,14 @@ export function isBiomarkerValueImprobable(key: string, val: number | string, no
 
   // Hematocrit is stored as a decimal ratio (0.36-0.50) while its normalRange
   // string is expressed as a percentage (36-50). Normalize the comparison value
-  // to the range's scale before running the outlier thresholds below, otherwise
-  // a CORRECT ratio value always looks like an extreme low outlier and gets
-  // permanently flagged. Mirrors the same correction already used in
-  // getBiomarkerStatus() further down this file.
+  // to the range's scale before running the outlier thresholds below.
   let evalNum = num;
+  if (key === 'hematocrit' && evalNum > 10) {
+    return true; // 42.1 as % when expecting ratio 0.36-0.50
+  }
+  if (key === 'hemoglobin' && evalNum > 0 && evalNum < 20) {
+    return true; // 14.5 g/dL when range is 120-180 g/L
+  }
   if (evalNum < 1 && rangeStr) {
     const m = rangeStr.match(/([\d.]+)\s*-\s*([\d.]+)/);
     if (m && parseFloat(m[2]) > 1) {
@@ -591,18 +612,18 @@ export function isBiomarkerValueImprobable(key: string, val: number | string, no
     }
   }
 
-  if (rangeStr) {
-    const match = rangeStr.match(/([\d.]+)\s*-\s*([\d.]+)/);
-    if (match) {
-      const min = parseFloat(match[1]);
-      const max = parseFloat(match[2]);
-      
-      // If min >= 50 and val < min * 0.45 (e.g., Sodium min 135, val 30 -> 30 < 60.75 -> true)
-      if (min >= 50 && evalNum < min * 0.45) return true;
-      // Extreme outlier check
-      if (min > 0 && evalNum < min * 0.1) return true;
-      if (max > 0 && evalNum > max * 25) return true;
-    }
+  const bounds = parseNormalRangeBounds(rangeStr);
+  if (bounds.min !== undefined && bounds.max !== undefined) {
+    const min = bounds.min;
+    const max = bounds.max;
+    
+    // If min >= 50 and val < min * 0.45 (e.g., Sodium min 135, val 30 -> 30 < 60.75 -> true)
+    if (min >= 50 && evalNum < min * 0.45) return true;
+    // Extreme outlier check
+    if (min > 0 && evalNum < min * 0.1) return true;
+    if (max > 0 && evalNum > max * 25) return true;
+  } else if (bounds.max !== undefined && bounds.max > 0) {
+    if (evalNum > bounds.max * 10) return true;
   }
   return false;
 }
@@ -792,7 +813,13 @@ export function normalizeHistoricalTelemetryErrors(
           normalizedVal = parseFloat((num / 6).toFixed(2)); // ~1.96
         }
       }
-      // 6. Generic scaling rule based on normal range bounds
+      // 6. Total cholesterol / lipids mg/dL -> mmol/L
+      else if (k === 'total_cholesterol' || k === 'cholesterol') {
+        if (num > 100) {
+          normalizedVal = parseFloat((num / 38.67).toFixed(2)); // 195 -> 5.04
+        }
+      }
+      // 7. Generic scaling rule based on normal range bounds
       else if (minNorm !== null && maxNorm !== null && minNorm > 0 && maxNorm > 0) {
         if (num < minNorm * 0.15) {
           if (num * 100 >= minNorm * 0.7 && num * 100 <= maxNorm * 1.3) {
@@ -823,6 +850,26 @@ export function normalizeHistoricalTelemetryErrors(
   });
 
   return { updatedHistory, fixedCount };
+}
+
+export function sanitizeBiomarkerHistoryOnLoad(
+  history: any[],
+  profile: any
+): { history: any[]; fixedCount: number; current: Record<string, any> } {
+  const { updatedHistory, fixedCount } = normalizeHistoricalTelemetryErrors(history, profile);
+  const current: Record<string, any> = {};
+  if (updatedHistory && updatedHistory.length > 0) {
+    updatedHistory.forEach((log) => {
+      if (log?.biomarkers) {
+        Object.entries(log.biomarkers).forEach(([k, v]) => {
+          if (current[k] === undefined && v !== null && v !== undefined) {
+            current[k] = v;
+          }
+        });
+      }
+    });
+  }
+  return { history: updatedHistory, fixedCount, current };
 }
 
 export const getBiomarkerStatus = (key: string, val: number | string, normalRangeStr?: string, customDef?: any, profile?: any): 'normal' | 'low' | 'high' | 'critical' | 'flagged' | 'unknown' => {

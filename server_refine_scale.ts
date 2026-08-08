@@ -333,5 +333,3 @@ export function shouldSkipScoutForWeightRefine(opts: {
 
   return { skip: false, intent, reason: 'images_without_locks' };
 }
-
-export function decideRefineVsScout() {}
