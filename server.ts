@@ -5554,6 +5554,11 @@ function parseServingSizeGrams(ssVal: string, totalItemWeight: number): number {
             return Math.round(getVal(keys) * scale * 10) / 10;
           };
           const sodiumPresent = !!(rawSodiumStr || rawSaltStr);
+          // Sugar: UK/EU "of which sugars" often only total sugars (not US Added Sugars).
+          // When printed sugar is present and addedSugar is not, use sugar as the locked
+          // addedSugar proxy so sweetened pots do not show 0g (see Co-op granola yogurt).
+          const sugarScaled = presentOrNull(['sugar', 'sugars', 'ofWhichSugars', 'of_which_sugars', 'totalsugars']);
+          const addedSugarScaled = presentOrNull(['addedSugar', 'added_sugar', 'addedSugars', 'addedsugars']);
           truthMatch = {
             source: 'label',
             id: `printed_packaging_label_${item.scoutIndex}`,
@@ -5567,6 +5572,10 @@ function parseServingSizeGrams(ssVal: string, totalItemWeight: number): number {
             sodium: sodiumPresent ? Math.round(sodiumPerServingMg * scale) : null,
             carbohydrates: presentOrNull(['totalCarbohydrate', 'carbohydrate', 'carbohydrates', 'carbs']),
             totalFibre: presentOrNull(['totalFibre', 'fibre', 'totalFiber', 'fiber']),
+            transFat: presentOrNull(['transFat', 'trans_fat', 'trans']),
+            potassium: presentOrNull(['potassium', 'k']),
+            sugar: sugarScaled,
+            addedSugar: addedSugarScaled != null ? addedSugarScaled : sugarScaled,
             ingredients: item.ingredientsList
           };
         }
@@ -5706,16 +5715,30 @@ function parseServingSizeGrams(ssVal: string, totalItemWeight: number): number {
         };
       
         // Keep calories locked to the kiosk screen OCR value
+        // Keep calories locked to the kiosk/OCR printed value. Only fill MISSING macros.
         mapField('protein', ['protein']);
         mapField('fat', ['fat', 'totalFat']);
         mapField('saturatedFat', ['saturatedFat', 'satFat']);
         mapField('carbohydrates', ['carbohydrates', 'carbs', 'totalCarbohydrate']);
         mapField('sodium', ['sodium']);
         mapField('totalFibre', ['totalFibre', 'fiber']);
+        mapField('addedSugar', ['addedSugar', 'sugar']);
+        mapField('potassium', ['potassium']);
+        mapField('transFat', ['transFat']);
         
-        if (webMatchRaw.nutrients && typeof webMatchRaw.nutrients === 'object') {
+        // Gap-fill micros only. NEVER inject USDA/web macros into truthMatch.nutrients when
+        // the truth source is a printed label — that path previously overwrote correct
+        // label-scaled locks (e.g. Co-op beef 37kcal/7.3p/63mg Na → USDA 35/5.5/10.7).
+        const LABEL_PROTECTED_NUTRIENT_KEYS = new Set([
+          'calories', 'protein', 'totalFat', 'fat', 'saturatedFat', 'satFat',
+          'sodium', 'carbohydrates', 'carbs', 'totalCarbohydrate', 'totalFibre', 'fiber',
+          'addedSugar', 'sugar', 'transFat', 'potassium'
+        ]);
+        if (webMatchRaw && webMatchRaw.nutrients && typeof webMatchRaw.nutrients === 'object') {
            if (!truthMatch.nutrients) truthMatch.nutrients = {};
+           const isLabelTruth = truthMatch.source === 'label' || truthMatch.source === 'label_partial';
            for (const [k, v] of Object.entries(webMatchRaw.nutrients)) {
+              if (isLabelTruth && LABEL_PROTECTED_NUTRIENT_KEYS.has(k)) continue;
               if (truthMatch.nutrients[k] === undefined || truthMatch.nutrients[k] === null) {
                   truthMatch.nutrients[k] = Number(v) * webScale;
               }
@@ -5727,11 +5750,13 @@ function parseServingSizeGrams(ssVal: string, totalItemWeight: number): number {
       if (truthMatch) {
         let webCals = Number(truthMatch.calories || 0);
         let webProt = Number(truthMatch.protein || 0);
-        let webFat = Number(truthMatch.fat || 0);
+        let webFat = Number(truthMatch.fat ?? truthMatch.totalFat ?? 0);
         let webSatFat = Number(truthMatch.saturatedFat || 0);
         let webNa = Number(truthMatch.sodium || 0);
         let webCarbs = Number(truthMatch.carbohydrates ?? truthMatch.carbs ?? 0);
         let webFibre = Number(truthMatch.totalFibre ?? truthMatch.fiber ?? 0);
+        let webAddedSugar = Number(truthMatch.addedSugar ?? truthMatch.sugar ?? 0);
+        let webPotassium = Number(truthMatch.potassium || 0);
 
         const rawBaseCals = webCals;
         const rawBaseProt = webProt;
@@ -5799,6 +5824,8 @@ function parseServingSizeGrams(ssVal: string, totalItemWeight: number): number {
           webNa = Math.round(webNa * servingScale);
           webCarbs = Math.round(webCarbs * servingScale * 10) / 10;
           webFibre = Math.round(webFibre * servingScale * 10) / 10;
+          webAddedSugar = Math.round(webAddedSugar * servingScale * 10) / 10;
+          webPotassium = Math.round(webPotassium * servingScale);
         }
 
         // Lock only fields the source actually recorded (post-rescale).
@@ -5809,9 +5836,23 @@ function parseServingSizeGrams(ssVal: string, totalItemWeight: number): number {
         if (sodiumKnown) lockTruth('sodium', webNa);
         if (carbsKnown) lockTruth('carbohydrates', webCarbs);
         if (fibreKnown) lockTruth('totalFibre', webFibre);
-        // Any extra numeric nutrient keys present on brand menu JSON (partial panels)
+        // Printed sugar / added sugar / potassium / trans fat (label panels often have these)
+        if (truthMatch.addedSugar != null || truthMatch.sugar != null) lockTruth('addedSugar', webAddedSugar);
+        if (truthMatch.potassium != null) lockTruth('potassium', webPotassium);
+        if (truthMatch.transFat != null) lockTruth('transFat', Number(truthMatch.transFat) * servingScale);
+
+        // Extra nutrient keys (brand JSON / soft micro fill). NEVER overwrite a printed lock.
+        // For printed labels, also skip re-locking CORE macros from any residual nutrients map
+        // so USDA component fill cannot poison label-scaled values (debug job beef topside).
         if (truthMatch.nutrients && typeof truthMatch.nutrients === 'object') {
+          const isLabelTruth = truthMatch.source === 'label' || truthMatch.source === 'label_partial';
+          const CORE_FROM_NUTRIENTS_BLOCK = new Set([
+            'calories', 'protein', 'totalFat', 'fat', 'saturatedFat', 'satFat',
+            'sodium', 'carbohydrates', 'carbs', 'totalFibre', 'fiber', 'addedSugar', 'sugar'
+          ]);
           for (const k of NUTRIENT_KEYS) {
+            if (lockedNutrientKeys.has(k)) continue;
+            if (isLabelTruth && CORE_FROM_NUTRIENTS_BLOCK.has(k)) continue;
             if (truthMatch.nutrients[k] !== undefined && truthMatch.nutrients[k] !== null) {
               const raw = Number(truthMatch.nutrients[k]);
               if (!Number.isFinite(raw)) continue;
@@ -5820,10 +5861,22 @@ function parseServingSizeGrams(ssVal: string, totalItemWeight: number): number {
                 continue;
               }
               
-              const scaled = (truthServingGrams > 0 && itemWeight > 0 && truthServingGrams !== itemWeight)
-                ? raw * (itemWeight / truthServingGrams)
-                : raw;
-              lockTruth(k, scaled);
+              // truthMatch.nutrients from web merge is already portion-scaled; label top-level
+              // fields used servingScale above. Brand dish nutrients may still be per-serving.
+              const alreadyPortionScaled = isLabelTruth || servingScale === 1;
+              const scaled = alreadyPortionScaled
+                ? raw
+                : ((truthServingGrams > 0 && itemWeight > 0 && truthServingGrams !== itemWeight)
+                  ? raw * (itemWeight / truthServingGrams)
+                  : raw);
+              // Soft micros for labels: store on primary profile later without hard-lock
+              // unless brand_official / non-label. For label, only soft-fill unlocked micros.
+              if (isLabelTruth) {
+                if (!truthMatch._softMicros) truthMatch._softMicros = {};
+                truthMatch._softMicros[k] = scaled;
+              } else {
+                lockTruth(k, scaled);
+              }
             }
           }
         }
@@ -5988,22 +6041,40 @@ function parseServingSizeGrams(ssVal: string, totalItemWeight: number): number {
 
           addDebugLog(`[Truth Data Backfill] "${item.originalName || item.keyword}": filled missing fields via ${backfillSource !== 'none' ? backfillSource : 'Atwater macro distribution'}; locked truth keys=[${Array.from(lockedNutrientKeys).join(', ')}]; estimated=[${estimatedFields.join(', ')}].`);
 
+          const per100 = (portionVal: number) =>
+            itemWeight > 0 ? Math.round((portionVal / itemWeight) * 100 * 10) / 10 : portionVal;
           primaryBase100g = {
             servingSizeGrams: 100,
             basisType: 'per_100g' as any,
             calories: itemWeight > 0 ? Math.round((webCals / itemWeight) * 100) : webCals,
-            protein: itemWeight > 0 ? Math.round(((webProt / itemWeight) * 100) * 10) / 10 : webProt,
-            totalFat: itemWeight > 0 ? Math.round(((webFat / itemWeight) * 100) * 10) / 10 : webFat,
-            saturatedFat: itemWeight > 0 ? Math.round(((webSatFat / itemWeight) * 100) * 10) / 10 : webSatFat,
+            protein: per100(webProt),
+            totalFat: per100(webFat),
+            saturatedFat: per100(webSatFat),
             transFat: 0,
-            carbohydrates: itemWeight > 0 ? Math.round(((webCarbs / itemWeight) * 100) * 10) / 10 : webCarbs,
-            addedSugar: 0,
+            carbohydrates: per100(webCarbs),
+            // Prefer locked / printed sugar — never hardcode 0 when label had sugars
+            addedSugar: lockedNutrientKeys.has('addedSugar') && truthNutrients.addedSugar != null
+              ? per100(Number(truthNutrients.addedSugar))
+              : (webAddedSugar > 0 ? per100(webAddedSugar) : 0),
             sodium: itemWeight > 0 ? Math.round((webNa / itemWeight) * 100) : webNa,
             salt: null,
-            potassium: 0,
-            totalFibre: itemWeight > 0 ? Math.round(((webFibre / itemWeight) * 100) * 10) / 10 : webFibre,
+            potassium: lockedNutrientKeys.has('potassium') && truthNutrients.potassium != null
+              ? per100(Number(truthNutrients.potassium))
+              : (webPotassium > 0 ? per100(webPotassium) : 0),
+            totalFibre: per100(webFibre),
             solubleFibre: 0
           };
+
+          // Soft micros from USDA/web (label path) — estimates only, not truth locks
+          if (truthMatch._softMicros && typeof truthMatch._softMicros === 'object' && itemWeight > 0) {
+            for (const [k, v] of Object.entries(truthMatch._softMicros as Record<string, number>)) {
+              if (lockedNutrientKeys.has(k)) continue;
+              const n = Number(v);
+              if (Number.isFinite(n) && n > 0) {
+                primaryBase100g![k] = n / (itemWeight / 100);
+              }
+            }
+          }
 
           // Fill unlocked nutrients (incl. micronutrients) from ingredient profile as per-100g estimates.
           if (typeof inferredFromIngredients !== 'undefined' && backfillSource !== 'none' && itemWeight > 0) {
@@ -6037,6 +6108,14 @@ function parseServingSizeGrams(ssVal: string, totalItemWeight: number): number {
           aggregatedNutrients.sodium = webNa;
           aggregatedNutrients.carbohydrates = webCarbs;
           aggregatedNutrients.totalFibre = webFibre;
+          if (lockedNutrientKeys.has('addedSugar') && truthNutrients.addedSugar != null) {
+            aggregatedNutrients.addedSugar = Number(truthNutrients.addedSugar);
+          } else if (webAddedSugar > 0) {
+            aggregatedNutrients.addedSugar = webAddedSugar;
+          }
+          if (lockedNutrientKeys.has('potassium') && truthNutrients.potassium != null) {
+            aggregatedNutrients.potassium = Number(truthNutrients.potassium);
+          }
           Object.entries(truthNutrients).forEach(([key, value]) => {
             aggregatedNutrients[key] = value;
           });
@@ -8467,20 +8546,24 @@ Current User Input: "${message}"`) + modeDPromptSuffix;
           const dbNameStr = it.primaryBaseMatchName || (dbMatchObj && dbMatchObj.name ? dbMatchObj.name : '');
           let dbRefTag = "";
           const dbSourceUpper = String(it.dbSource || '').toUpperCase();
-          const canonicalBase = lookupCanonicalBaseFood(dbNameStr || it.keyword || it.name);
-          const realFdcId = (canonicalBase && canonicalBase.fdcId) ? canonicalBase.fdcId : (dbSourceUpper === 'USDA' && it.dbId && !String(it.dbId).startsWith('canonical_') ? it.dbId : null);
           const cleanItemName = dbNameStr ? dbNameStr.replace(' (Canonical Base)', '').replace(' (Estimated Component Baseline)', '') : (it.keyword || it.name || 'Ingredient');
+          // Prefer printed/brand truth for receipt attribution. Never let a name-token
+          // canonical match (e.g. "blueberry" → raw blueberries FDC) hijack a LABEL row.
+          const canonicalBase = (dbSourceUpper === 'LABEL' || dbSourceUpper === 'BRAND_OFFICIAL')
+            ? null
+            : lookupCanonicalBaseFood(dbNameStr || it.keyword || it.name);
+          const realFdcId = (canonicalBase && canonicalBase.fdcId) ? canonicalBase.fdcId : (dbSourceUpper === 'USDA' && it.dbId && !String(it.dbId).startsWith('canonical_') && !String(it.dbId).startsWith('printed_') ? it.dbId : null);
 
-          if (canonicalBase && canonicalBase.fdcId) {
+          if (dbSourceUpper === 'LABEL' || String(it.dbId || '').startsWith('printed_packaging_label')) {
+            dbRefTag = `Printed Packaging Label (${cleanItemName})`;
+          } else if (dbSourceUpper === 'BRAND_OFFICIAL') {
+            dbRefTag = `Official Brand/Menu Data (${cleanItemName})`;
+          } else if (canonicalBase && canonicalBase.fdcId) {
             dbRefTag = `📖 [${cleanItemName}](https://fdc.nal.usda.gov/fdc-app.html#/food-details/${canonicalBase.fdcId}/nutrients)`;
           } else if (realFdcId) {
             dbRefTag = `[USDA #${realFdcId}](https://fdc.nal.usda.gov/fdc-app.html#/food-details/${realFdcId}/nutrients) (${cleanItemName})`;
           } else if (dbSourceUpper === 'OFF' && it.dbId) {
             dbRefTag = `[OFF #${it.dbId}](https://world.openfoodfacts.org/product/${it.dbId}) (${cleanItemName})`;
-          } else if (dbSourceUpper === 'LABEL') {
-            dbRefTag = `Printed Packaging Label (${cleanItemName})`;
-          } else if (dbSourceUpper === 'BRAND_OFFICIAL') {
-            dbRefTag = `Official Brand/Menu Data (${cleanItemName})`;
           } else if (dbSourceUpper === 'CATEGORY_FALLBACK' || dbSourceUpper === 'FALLBACK_ESTIMATED' || String(it.dbId || '').startsWith('fallback_')) {
             dbRefTag = `Estimated: ${cleanItemName} (category fallback)`;
           } else {

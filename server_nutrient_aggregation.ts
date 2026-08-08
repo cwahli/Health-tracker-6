@@ -73,6 +73,18 @@ export function aggregateItemsNutrients(
       }
     }
 
+    // When printed-label (or brand) truth is locked, force those portion totals first.
+    // Multi-component primaryBase100g may still carry USDA density for micros/receipt
+    // sub-rows, but locked macros must never be recomputed from that density
+    // (debug: Co-op beef topside 25g label 37/7.3/63 → USDA 35/5.5/11).
+    const applyTruthLocks = (target: Record<string, any>) => {
+      Object.entries(itemTruthNutrients).forEach(([key, val]) => {
+        if (!itemLockedKeys.has(key)) return;
+        const num = Number(val);
+        if (Number.isFinite(num)) target[key] = num;
+      });
+    };
+
     if (item.primaryBase100g) {
       // It's a multi-component item! Calculate base and sauces and cooking method additions deterministically
       const raw100 = { ...item.primaryBase100g };
@@ -235,7 +247,10 @@ export function aggregateItemsNutrients(
       itemNutrients.totalFibre = parseFloat(sumFibre.toFixed(2));
       itemNutrients.solubleFibre = parseFloat(sumSolubleFibre.toFixed(2));
 
-      addDebugLog(`[Nutrient] "${canonicalName}" computed DETERMINISTICALLY by summing components: Cal=${sumCal}, Protein=${sumP}, Fat=${sumFat}, SatFat=${sumSatFat}, Sodium=${sumNa}, AddedSugar=${sumSugar}, TotalFibre=${sumFibre}`);
+      // Re-apply printed locks immediately so the "summing components" log reflects truth
+      applyTruthLocks(itemNutrients);
+
+      addDebugLog(`[Nutrient] "${canonicalName}" computed DETERMINISTICALLY by summing components: Cal=${itemNutrients.calories}, Protein=${itemNutrients.protein}, Fat=${itemNutrients.totalFat}, SatFat=${itemNutrients.saturatedFat}, Sodium=${itemNutrients.sodium}, AddedSugar=${itemNutrients.addedSugar}, TotalFibre=${itemNutrients.totalFibre}${itemLockedKeys.size ? ` (locks=${Array.from(itemLockedKeys).join(',')})` : ''}`);
     } else {
       // STEP 1: Apply LLM core-11 estimate (present for label and estimated items)
       if (labelData && servingSizeGrams > 0) {

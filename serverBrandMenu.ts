@@ -102,7 +102,14 @@ export async function autoRegisterChainMenuItem(
     // total (e.g. "783 kcal" for a sandwich), never as a per-100g rate.
     const ssRaw = String(rawLabel.servingSize || rawLabel.servingSizeRaw || '').trim();
     const estWeight = parseNutrientNumber(item?.estimatedWeightGrams);
-    const basisInfo = inferBasisFromServingText(ssRaw, estWeight, true);
+    const ssLooksLikePackage100g =
+      /100\s*g/i.test(ssRaw) ||
+      /per\s*100/i.test(ssRaw) ||
+      /^100(\.0+)?\s*g?$/i.test(ssRaw.trim());
+    const assumeDishNotPackage = !ssRaw || (!ssLooksLikePackage100g && !/\d+\s*(g|ml)\b/i.test(ssRaw));
+    const basisInfo = ssLooksLikePackage100g
+      ? { basisType: 'per_100g' as const, servingGrams: 100 }
+      : inferBasisFromServingText(ssRaw, estWeight, assumeDishNotPackage);
     const basis_type = basisInfo.basisType;
     const serving_grams = basisInfo.servingGrams;
 
@@ -1090,15 +1097,14 @@ export async function consolidateBrandMenuItemsAndChains(
 
         if (items.length === 1) {
           const single = items[0];
-          const needsBasisFix = single.basis_type === 'per_100g' && (!single.serving_grams || single.serving_grams === 100);
-          
-          if (single.chain_key !== normChain || single.dish_name_key !== normDish || needsBasisFix) {
+          // Do NOT convert per_100g grocery labels to per_dish (that corrupted Co-op beef/yogurt).
+          // Only normalize chain/dish keys when needed.
+          if (single.chain_key !== normChain || single.dish_name_key !== normDish) {
             const { error: upErr } = await supabaseAdmin
               .from('brand_menu_items')
               .update({
                 chain_key: normChain,
                 dish_name_key: normDish,
-                ...(needsBasisFix ? { basis_type: 'per_dish', serving_grams: null } : {}),
                 updated_at: new Date().toISOString()
               })
               .eq('id', single.id);
@@ -1143,8 +1149,6 @@ export async function consolidateBrandMenuItemsAndChains(
             }
           }
 
-          const needsBasisFix = primary.basis_type === 'per_100g' && (!primary.serving_grams || primary.serving_grams === 100);
-
           const { error: updatePrimaryErr } = await supabaseAdmin
             .from('brand_menu_items')
             .update({
@@ -1153,7 +1157,6 @@ export async function consolidateBrandMenuItemsAndChains(
               nutrients: mergedNutrients,
               ingredients: mergedIngredients,
               capture_count: totalCaptures,
-              ...(needsBasisFix ? { basis_type: 'per_dish', serving_grams: null } : {}),
               updated_at: new Date().toISOString()
             })
             .eq('id', primary.id);
@@ -1266,15 +1269,12 @@ export async function consolidateBrandMenuItemsAndChains(
               }
             }
 
-            const needsBasisFix = primary.basis_type === 'per_100g' && (!primary.serving_grams || primary.serving_grams === 100);
-
             const { error: updatePrimaryErr } = await supabaseAdmin
               .from('brand_menu_items')
               .update({
                 nutrients: mergedNutrients,
                 ingredients: mergedIngredients,
                 capture_count: totalCaptures,
-                ...(needsBasisFix ? { basis_type: 'per_dish', serving_grams: null } : {}),
                 updated_at: new Date().toISOString()
               })
               .eq('id', primary.id);
