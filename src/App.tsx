@@ -16,6 +16,7 @@ import { JobQueueRunner } from './jobs/JobQueueRunner';
 import { initSupabaseJobSync } from './jobs/SupabaseJobSync';
 import { ImageStore } from './jobs/ImageStore';
 import { executeFoodAgent } from './jobs/FoodAgentExecutor';
+// executeFoodAgent wiring: checkpoint: job.checkpoint, skipScout: true
 import { executeMedicalAgent } from './jobs/MedicalAgentExecutor';
 import { getProgressPercent, getStepCeiling } from './jobs/progress';
 import FloatingActionSheet from './components/FloatingActionSheet';

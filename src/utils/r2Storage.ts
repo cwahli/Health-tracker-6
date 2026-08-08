@@ -1,5 +1,6 @@
 
 // Storage preserves photo to /photos/ and raw log to /debug/
+// endpoint d17eecca64f82625d29dc38b14f46c14.r2.cloudflarestorage.com
 
 export async function uploadPhotoToR2(jobId: string, imageBlobOrDataUrl: string): Promise<string> {
   if (typeof window === 'undefined') {

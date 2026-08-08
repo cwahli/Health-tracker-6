@@ -2757,9 +2757,9 @@ ${logsText}`);
     if (typeof overrideText !== 'string') {
       setInputText('');
     }
-    const tempImages = overrideImages.length > 0 ? overrideImages : [...selectedImages];
-    const tempAnalysisImages = overrideImages.length > 0 ? overrideImages : [...selectedImagesForAnalysis];
-    const tempDates = overrideImages.length > 0 ? [] : [...imageDates];
+    const tempImages = overrideImagesInner.length > 0 ? overrideImagesInner : [...selectedImages];
+    const tempAnalysisImages = overrideImagesInner.length > 0 ? overrideImagesInner : [...selectedImagesForAnalysis];
+    const tempDates = overrideImagesInner.length > 0 ? [] : [...imageDates];
     setSelectedImages([]);
     setSelectedImagesForAnalysis([]);
     setImageDates([]);

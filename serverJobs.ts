@@ -53,6 +53,8 @@ export async function submitServerJob(payload: ServerJobPayload): Promise<void> 
     let photoUrl = imageUrls[0] || '';
     let currentProgress = 5;
     let currentStatusMessage = 'Starting cloud food analysis...';
+    let finalData: any = null;
+    let persistSucceeded: ((finalPayload: any) => Promise<void>) | null = null;
 
     const updateSupabaseProgress = async (progress: number, message: string) => {
       currentProgress = progress;
@@ -150,7 +152,7 @@ export async function submitServerJob(payload: ServerJobPayload): Promise<void> 
 
       const decoder = new TextDecoder();
       let buffer = '';
-      let finalData: any = null;
+      finalData = null;
 
       try {
         while (true) {
@@ -218,7 +220,7 @@ export async function submitServerJob(payload: ServerJobPayload): Promise<void> 
       }
 
       // Helper to write successful outcome to Supabase
-      const persistSucceeded = async (finalPayload: any) => {
+      persistSucceeded = async (finalPayload: any) => {
         const foodLog = finalPayload?.pendingFoodLog || finalPayload?.data || null;
         const pendingFoodLog = foodLog || (finalPayload?.name && finalPayload?.nutrients ? finalPayload : finalPayload);
         if (pendingFoodLog && typeof pendingFoodLog === 'object') {
@@ -270,7 +272,9 @@ export async function submitServerJob(payload: ServerJobPayload): Promise<void> 
         }
       };
 
-      await persistSucceeded(finalData);
+      if (persistSucceeded) {
+        await persistSucceeded(finalData);
+      }
 
     } catch (err: any) {
       console.error(`[ServerJobs] Job ${jobId} failed:`, err);
@@ -279,7 +283,9 @@ export async function submitServerJob(payload: ServerJobPayload): Promise<void> 
       if (finalData) {
         try {
           accumulatedLogs.push('[ServerJobs] Recovering: final result was present despite later error — marking succeeded.');
-          await persistSucceeded(finalData);
+          if (persistSucceeded) {
+            await persistSucceeded(finalData);
+          }
           return;
         } catch (recoverErr: any) {
           console.error('[ServerJobs] Recover-as-success failed:', recoverErr);

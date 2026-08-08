@@ -1,4 +1,4 @@
-export type JobStatus = 'draft' | 'queued' | 'running' | 'succeeded' | 'failed' | 'cancel_requested' | 'cancelled';
+export type JobStatus = 'draft' | 'queued' | 'running' | 'succeeded' | 'failed' | 'cancel_requested' | 'cancelled' | 'awaiting_user' | 'processing';
 export type ErrorClass = 'permanent' | 'transient' | 'retriable_from_checkpoint';
 export type JobKind = 'food_log' | 'food_compare' | 'front_desk' | 'medical' | string;
 
