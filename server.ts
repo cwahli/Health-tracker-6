@@ -458,6 +458,8 @@ import {
   mergeScoutItems, 
   parseAndHealVisionScout 
 } from "./server_vision_scout";
+import { buildPortionClarifyPayload, applyPortionChoices } from "./server_portion_clarify.js";
+import { detectWeightRefineIntent, applyWeightRefineToScoutItems, decideRefineVsScout, priorScoutHasLabelLocks } from "./server_refine_scale.js";
 
 
 import { getFirestore, Firestore } from "firebase-admin/firestore";
@@ -4349,6 +4351,16 @@ app.post("/api/gemini/food-analyze", async (req, res) => {
     const scoutOriginalQueries: string[] = [];
 
     let visionScoutRanAndReturnedItems = false;
+    
+    const priorScoutForRefine = req.body.activeScoutItems || [];
+    const weightRefineIntent = detectWeightRefineIntent(message || '', priorScoutForRefine);
+    const refineDecision = decideRefineVsScout({
+      isRefine: weightRefineIntent.isRefine,
+      hasImages: !!(imagePayloads && imagePayloads.length > 0),
+      hasPriorScout: priorScoutForRefine.length > 0,
+      hasPortionChoices: !!req.body.portionChoices,
+      isExplicitModify
+    });
 
     if (compareOnly) {
       addDebugLog(`[Shortcut] Compare mode detected. Skipping Vision Scout and DB Search.`);
@@ -4361,8 +4373,19 @@ app.post("/api/gemini/food-analyze", async (req, res) => {
           source: "compare_request"
         }));
       }
-    } else if (isWeightModification) {
+    } else if (isWeightModification || refineDecision.skip) {
+      addDebugLog(
+        `[Refine] scale-only reason=${refineDecision.reason} locks=${priorScoutHasLabelLocks(priorScoutForRefine)} images=${imagePayloads?.length || 0}`
+      );
       addDebugLog(`[Shortcut] Weight modification detected on active meal. Skipping Vision Scout and DB Search.`);
+      visionScoutItems = Array.isArray(req.body.activeScoutItems) ? [...req.body.activeScoutItems] : visionScoutItems;
+      if (req.body.portionChoices) {
+        visionScoutItems = applyPortionChoices(visionScoutItems, req.body.portionChoices);
+      } else if (weightRefineIntent.isRefine) {
+        visionScoutItems = applyWeightRefineToScoutItems(visionScoutItems, weightRefineIntent);
+      }
+      visionScoutContentType = req.body.scoutContentType || 'visual';
+      visionScoutRanAndReturnedItems = visionScoutItems.length > 0;
     } else if (req.body.skipScout && req.body.activeScoutItems && req.body.activeScoutItems.length > 0) {
       addDebugLog(`[Shortcut] skipScout is true. Inheriting scout items from previous run.`);
       visionScoutItems = req.body.activeScoutItems;
@@ -4703,6 +4726,38 @@ app.post("/api/gemini/food-analyze", async (req, res) => {
       }
     }
 
+    const portionClarify =
+      !req.body.portionChoices &&
+      !req.body.skipPortionClarify &&
+      !isWeightModification &&
+      !compareOnly &&
+      !isExplicitModify &&
+      visionScoutRanAndReturnedItems
+        ? buildPortionClarifyPayload(visionScoutItems)
+        : null;
+
+    if (portionClarify) {
+      addDebugLog(`[PortionClarify] Pausing for user input on: ${portionClarify.items.map((i: any) => i.name).join('; ')}`);
+      sendStreamEvent({
+        type: 'status',
+        stage: 'portion_clarify',
+        status: 'awaiting_user',
+        message: portionClarify.promptMessage,
+      });
+      return res.json({
+        needsPortionClarify: true,
+        mode: 'portion_clarify',
+        message: portionClarify.promptMessage,
+        text: portionClarify.promptMessage,
+        scoutItems: visionScoutItems,
+        portionClarify,
+        agentResult: {
+          scoutItems: visionScoutItems,
+          activeStage: 'portion_clarify',
+        },
+      });
+    }
+
     // Dish-count based, not flattened query-string count: components/visualIngredients
     // strings were inflating this and causing false positives on normal 2-3 item meals.
     const isEvaluationScale = visionScoutItems.length >= 15;
@@ -4909,6 +4964,43 @@ app.post("/api/gemini/food-analyze", async (req, res) => {
       sendLog('db_search_complete', 'db_search', `Found ${databaseMatchesArray.length} database match(es) across USDA & OpenFoodFacts.`);
       sendStreamEvent({ type: 'status', stage: 'db_search', status: 'completed', message: 'Database search completed.' });
 
+      const labelCompleteQueries = new Set<string>();
+      const scoutHasCompletePrintedLabel = (item: any): boolean => {
+        const raw = item?.rawNutritionLabel;
+        if (!raw || typeof raw !== 'object') return false;
+        
+        const parseLabelCalories = (obj: any): number | null => {
+          if (obj.calories != null) return Number(obj.calories);
+          if (obj.energy != null) return Number(obj.energy);
+          if (obj.energyKcal != null) return Number(obj.energyKcal);
+          return null;
+        };
+
+        const cal = parseLabelCalories(raw);
+        if (cal == null || !(cal > 0)) return false;
+        let filled = 0;
+        for (const [k, v] of Object.entries(raw)) {
+          const ck = k.toLowerCase().replace(/[^a-z0-9]/g, '');
+          if (ck === 'servingsize' || ck === 'weight' || ck === 'servingspercontainer') continue;
+          if (v === undefined || v === null || v === '' || v === '-' || v === '--') continue;
+          filled++;
+        }
+        return filled >= 4;
+      };
+
+      for (const s of visionScoutItems || []) {
+        if (!scoutHasCompletePrintedLabel(s)) continue;
+        for (const q of [s.originalName, s.keyword, s.name]) {
+          if (q && String(q).trim()) labelCompleteQueries.add(String(q).toLowerCase().trim());
+        }
+        if (Array.isArray(s.components)) {
+          for (const c of s.components) {
+            const cq = c?.searchQuery || c?.name || c?.keyword;
+            if (cq && String(cq).trim()) labelCompleteQueries.add(String(cq).toLowerCase().trim());
+          }
+        }
+      }
+
       // Run Food Resolver Agent only for query gaps that do NOT hit the internal catalog or dish cache
       const gapsForResolver: Array<{ query: string; candidates: Array<{ id: string; name: string; source: string }> }> = [];
 
@@ -4918,6 +5010,12 @@ app.post("/api/gemini/food-analyze", async (req, res) => {
       }));
 
       for (const { resItem, hit } of internalHits) {
+        const qNorm = String(resItem.query || '').toLowerCase().trim();
+        if (qNorm && labelCompleteQueries.has(qNorm)) {
+          addDebugLog(`[Food Resolver Skip] Complete printed label covers "${resItem.query}" — skipping LLM resolver for this gap.`);
+          continue;
+        }
+
         if (hit) {
           const virtualId = hit.food_id || `internal_${hit.food_key}`;
           dbMatchMap.set(virtualId, hit.nutrients_per_100g);
@@ -7171,7 +7269,7 @@ function parseServingSizeGrams(ssVal: string, totalItemWeight: number): number {
     // 2. Prepend active state to Master System Instructions
     let effectiveActiveMeal = activeMeal;
     const hasUploadedNewImages = imagePayloads && imagePayloads.length > 0;
-    if ((scoutRecommendedMode === "new_log" && !isExplicitModify && !userExplicitlySelectedEditMode) || (hasUploadedNewImages && !isExplicitModify)) {
+    if (!isWeightModification && !refineDecision.skip && ((scoutRecommendedMode === "new_log" && !isExplicitModify && !userExplicitlySelectedEditMode) || (hasUploadedNewImages && !isExplicitModify))) {
       addDebugLog(`[State Isolation] New image scan or new_log mode detected. Isolating activeMeal context so Dietitian operates on clean state.`);
       effectiveActiveMeal = null;
       historyContext = "";

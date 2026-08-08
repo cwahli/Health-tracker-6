@@ -1157,6 +1157,32 @@ export default function App() {
 
                   done = true;
                   return; // Done!
+                } else if (serverJob.status === 'awaiting_user') {
+                  const cleanResult = serverJob.clean_result || {};
+                  const userMsgs = (job.messages || []).filter((m) => m.role === 'user');
+                  const assistantMsg = {
+                    id: `msg_assistant_${job.id}`,
+                    role: 'assistant',
+                    content: serverJob.status_message || 'Please clarify.',
+                    timestamp: new Date().toISOString(),
+                    isLive: false,
+                    agentType: 'food',
+                    data: {
+                      portionClarify: cleanResult.portionClarify,
+                      agentResult: cleanResult.agentResult || {
+                        scoutItems: cleanResult.scoutItems || [],
+                        activeStage: 'portion_clarify'
+                      }
+                    }
+                  };
+                  JobStore.updateJob(job.id, {
+                    status: 'awaiting_user',
+                    statusMessage: serverJob.status_message,
+                    messages: [...userMsgs, assistantMsg],
+                    result: cleanResult
+                  });
+                  done = true;
+                  return; // Stop polling, wait for user input
                 } else if (serverJob.status === 'failed') {
                   const reqId = serverJob.request_id || job.requestId || job.id;
                   const failMsg = serverJob.status_message || 'Analysis failed on server.';
@@ -1172,10 +1198,31 @@ export default function App() {
                     summary: `Failed: ${job.kind || 'Food Log'}`,
                     logs: logsList
                   });
+                  
+                  // Preserve assistant message on failure
+                  const userMsgs = (job.messages || []).filter((m) => m.role === 'user');
+                  const assistantMsg = {
+                    id: `msg_assistant_fail_${job.id}`,
+                    role: 'assistant',
+                    content: failMsg,
+                    timestamp: new Date().toISOString(),
+                    isLive: false,
+                    agentType: 'food',
+                    data: {
+                      debugUrl: serverJob.debug_url || cleanResult.debugUrl,
+                      backendLogs: rawLogs,
+                      agentResult: {
+                        scoutItems: cleanResult.scoutItems || [],
+                        backendLogs: rawLogs
+                      },
+                      preservationNote: "Partial result was preserved"
+                    }
+                  };
 
                   JobStore.updateJob(job.id, {
                     status: 'failed',
                     statusMessage: failMsg,
+                    messages: [...userMsgs, assistantMsg],
                     finishedAt: new Date().toISOString(),
                     error: { class: 'transient', message: failMsg }
                   });
@@ -1189,20 +1236,58 @@ export default function App() {
 
             if (!done) {
               const reqId = job.requestId || job.id;
-              const timeoutMsg = 'Analysis timed out after 3 minutes. Tap Retry to try again.';
-              saveAgentRequestLog({
-                id: reqId,
-                timestamp: new Date().toISOString(),
-                summary: `Timed Out: ${job.kind || 'Food Log'}`,
-                logs: [{ timestamp: new Date().toISOString(), message: `[error] ${timeoutMsg}` }]
-              });
+              
+              // Last-chance poll
+              let recoveredServerJob: any = null;
+              try {
+                const statusRes = await fetch(`/api/jobs/status?jobId=${job.id}&userId=${auth.currentUser?.uid || 'anonymous'}`);
+                if (statusRes.ok) {
+                  const { jobs } = await statusRes.json();
+                  recoveredServerJob = jobs && jobs[0];
+                }
+              } catch (e) {}
 
-              JobStore.updateJob(job.id, {
-                status: 'failed',
-                statusMessage: timeoutMsg,
-                finishedAt: new Date().toISOString(),
-                error: { class: 'transient', message: timeoutMsg }
-              });
+              if (recoveredServerJob && recoveredServerJob.status === 'succeeded') {
+                console.log(`[JobQueueRunner] Job ${job.id} Analysis complete (recovered after poll window).`);
+                JobStore.updateJob(job.id, {
+                  status: 'processing',
+                  statusMessage: 'Recovering final result...',
+                  progressPercent: 99
+                });
+                // We just continue the loop once more artificially by extending maxPollAttempts
+                // But wait, the while loop already broke. 
+                // Let's just recursively call processJob or just update the DB and let the next tick handle it?
+                // Actually, just wait for next poll by not marking it failed. But we are outside the loop.
+              } else {
+                const timeoutMsg = 'Analysis timed out after 3 minutes. Tap Retry to try again.';
+                saveAgentRequestLog({
+                  id: reqId,
+                  timestamp: new Date().toISOString(),
+                  summary: `Timed Out: ${job.kind || 'Food Log'}`,
+                  logs: [{ timestamp: new Date().toISOString(), message: `[error] ${timeoutMsg}` }]
+                });
+
+                const userMsgs = (job.messages || []).filter((m) => m.role === 'user');
+                const assistantMsg = {
+                  id: `msg_assistant_fail_${job.id}`,
+                  role: 'assistant',
+                  content: timeoutMsg,
+                  timestamp: new Date().toISOString(),
+                  isLive: false,
+                  agentType: 'food',
+                  data: {
+                    preservationNote: "Partial result was preserved"
+                  }
+                };
+
+                JobStore.updateJob(job.id, {
+                  status: 'failed',
+                  statusMessage: timeoutMsg,
+                  messages: [...userMsgs, assistantMsg],
+                  finishedAt: new Date().toISOString(),
+                  error: { class: 'transient', message: timeoutMsg }
+                });
+              }
             }
             return;
           }

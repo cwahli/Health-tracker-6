@@ -24,7 +24,7 @@ export const saveAgentRequestLog = (requestLog: AgentRequestLog) => {
       };
     })
   };
-  const existing = getAgentRequestLogs();
+  let existing = getAgentRequestLogs();
   
   const existingIndex = existing.findIndex(r => r.id === sanitized.id);
   if (existingIndex !== -1) {
@@ -34,8 +34,9 @@ export const saveAgentRequestLog = (requestLog: AgentRequestLog) => {
   }
   
   // Keep up to 15 requests
-  if (existing.length > 15) {
-    existing.length = 15;
+  const HOT_LOG_CAP = 5;
+  if (existing.length > HOT_LOG_CAP) {
+    existing = existing.slice(0, HOT_LOG_CAP);
   }
 
   try {

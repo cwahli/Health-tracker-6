@@ -19,6 +19,7 @@ export interface ServerJobPayload {
   foodLogs?: any[];
   userSelectedMode?: string;
   activeScoutItems?: any[];
+  portionChoices?: any;
 }
 
 export async function submitServerJob(payload: ServerJobPayload): Promise<void> {
@@ -97,7 +98,8 @@ export async function submitServerJob(payload: ServerJobPayload): Promise<void> 
         activeMeal: payload.activeMeal || null,
         foodLogs: payload.foodLogs || [],
         userSelectedMode: payload.userSelectedMode || mode || 'review',
-        activeScoutItems: payload.activeScoutItems || []
+        activeScoutItems: payload.activeScoutItems || [],
+        portionChoices: payload.portionChoices
       };
 
       // Server background job worker invocation via loopback with AbortController timeout
@@ -203,82 +205,122 @@ export async function submitServerJob(payload: ServerJobPayload): Promise<void> 
         throw new Error('Stream finished but no final result data was received');
       }
 
-      // Step B: Build clean result object
-      const foodLog =
-        finalData?.pendingFoodLog ||
-        finalData?.data ||
-        null;
-      // if finalData itself looks like a FoodLog (name + nutrients), use it
-      const pendingFoodLog =
-        foodLog ||
-        (finalData?.name && finalData?.nutrients ? finalData : finalData);
-      
-      if (pendingFoodLog && typeof pendingFoodLog === 'object') {
-        pendingFoodLog.imageUrl = photoUrl || pendingFoodLog.imageUrl;
-        if (Array.isArray(pendingFoodLog.imageUrls)) {
-          pendingFoodLog.imageUrls = photoUrl ? [photoUrl] : pendingFoodLog.imageUrls;
+      if (finalData.needsPortionClarify) {
+        if (isSupabaseConfigured) {
+          await supabaseAdmin.from('agent_jobs').update({
+            status: 'awaiting_user',
+            status_message: finalData.message || 'Please clarify portion sizes.',
+            clean_result: finalData, // contains portionClarify
+            updated_at: new Date().toISOString()
+          }).eq('id', jobId);
         }
+        return;
       }
 
-      const cleanResult = {
-        pendingFoodLog: pendingFoodLog,
-        message: finalData?.message || finalData?.text || '',
-        text: finalData?.text || finalData?.message || '',
-        dietitianScratchpad: finalData?.dietitianScratchpad || '',
-        mode: finalData?.mode || mode || 'review',
-        scoutItems: finalData?.scoutItems || undefined,
-        photoUrl: photoUrl || undefined,
-        debugUrl: undefined as string | undefined,
-        // Keep logs for multi-device + offline debug download (can be large but needed)
-        backendLogs: accumulatedLogs.join('\n').slice(0, 200000),
+      // Helper to write successful outcome to Supabase
+      const persistSucceeded = async (finalPayload: any) => {
+        const foodLog = finalPayload?.pendingFoodLog || finalPayload?.data || null;
+        const pendingFoodLog = foodLog || (finalPayload?.name && finalPayload?.nutrients ? finalPayload : finalPayload);
+        if (pendingFoodLog && typeof pendingFoodLog === 'object') {
+          pendingFoodLog.imageUrl = photoUrl || pendingFoodLog.imageUrl;
+          if (Array.isArray(pendingFoodLog.imageUrls)) {
+            pendingFoodLog.imageUrls = photoUrl ? [photoUrl] : pendingFoodLog.imageUrls;
+          }
+        }
+
+        const cleanResult: any = {
+          pendingFoodLog: pendingFoodLog,
+          message: finalPayload?.message || finalPayload?.text || '',
+          text: finalPayload?.text || finalPayload?.message || '',
+          dietitianScratchpad: finalPayload?.dietitianScratchpad || '',
+          mode: finalPayload?.mode || mode || 'review',
+          scoutItems: finalPayload?.scoutItems || undefined,
+          photoUrl: photoUrl || undefined,
+          debugUrl: undefined as string | undefined,
+          backendLogs: accumulatedLogs.join('\n').slice(0, 200000),
+        };
+
+        try {
+          const debugUrl = await uploadDebugPayloadToR2(jobId, {
+            jobId,
+            userId,
+            kind,
+            mode,
+            text,
+            photoUrl,
+            result: cleanResult,
+            backendLogs: accumulatedLogs.join('\n'),
+            completedAt: new Date().toISOString(),
+          });
+          if (debugUrl) cleanResult.debugUrl = debugUrl;
+        } catch (r2Err) {
+          console.warn('[ServerJobs] R2 debug upload failed (non-fatal):', r2Err);
+        }
+
+        if (isSupabaseConfigured) {
+          await supabaseAdmin.from('agent_jobs').update({
+            status: 'succeeded',
+            progress_percent: 100,
+            status_message: 'Analysis complete',
+            photo_url: photoUrl || null,
+            debug_url: cleanResult.debugUrl || null,
+            clean_result: cleanResult,
+            updated_at: new Date().toISOString(),
+          }).eq('id', jobId);
+        }
       };
 
-      // Step C: Save full debug payload to Cloudflare R2
-      const debugData = {
-        jobId,
-        userId,
-        kind,
-        mode,
-        text,
-        photoUrl,
-        result: cleanResult,
-        backendLogs: accumulatedLogs.join('\n'),
-        completedAt: new Date().toISOString()
-      };
-      const debugUrl = await uploadDebugPayloadToR2(jobId, debugData);
-      cleanResult.debugUrl = debugUrl;
+      await persistSucceeded(finalData);
 
-      if (pendingFoodLog && typeof pendingFoodLog === 'object') {
-        pendingFoodLog.debugUrl = debugUrl;
-      }
-
-      // Step D: Update Supabase to Succeeded
-      if (isSupabaseConfigured) {
-        await supabaseAdmin.from('agent_jobs').update({
-          status: 'succeeded',
-          progress_percent: 100,
-          status_message: 'Analysis complete',
-          photo_url: photoUrl || null,
-          debug_url: debugUrl || null,
-          clean_result: cleanResult,
-          updated_at: new Date().toISOString()
-        }).eq('id', jobId);
-      }
     } catch (err: any) {
       console.error(`[ServerJobs] Job ${jobId} failed:`, err);
       accumulatedLogs.push(`[error] Job execution failed: ${err.message || String(err)}`);
-      const errorCleanResult = {
+
+      if (finalData) {
+        try {
+          accumulatedLogs.push('[ServerJobs] Recovering: final result was present despite later error — marking succeeded.');
+          await persistSucceeded(finalData);
+          return;
+        } catch (recoverErr: any) {
+          console.error('[ServerJobs] Recover-as-success failed:', recoverErr);
+        }
+      }
+
+      const errorCleanResult: any = {
         message: err.message || 'Server analysis failed or timed out',
         error: err.message || 'Unknown error',
         backendLogs: accumulatedLogs.join('\n').slice(0, 200000),
-        photoUrl: photoUrl || undefined
+        photoUrl: photoUrl || undefined,
+        scoutItems: finalData?.scoutItems,
       };
+      if (finalData?.pendingFoodLog || finalData?.data) {
+        errorCleanResult.pendingFoodLog = finalData.pendingFoodLog || finalData.data;
+      }
+      try {
+        const debugUrl = await uploadDebugPayloadToR2(jobId, {
+          jobId,
+          userId,
+          kind,
+          mode,
+          text,
+          photoUrl,
+          result: errorCleanResult,
+          backendLogs: errorCleanResult.backendLogs,
+          failedAt: new Date().toISOString(),
+        });
+        if (debugUrl) errorCleanResult.debugUrl = debugUrl;
+      } catch (r2Fail) {
+        console.warn('[ServerJobs] R2 debug upload on fail (non-fatal):', r2Fail);
+      }
+
       if (isSupabaseConfigured) {
         try {
           await supabaseAdmin.from('agent_jobs').update({
             status: 'failed',
             status_message: err.message || 'Server analysis failed or timed out. Please tap Retry.',
             clean_result: errorCleanResult,
+            debug_url: errorCleanResult.debugUrl || null,
+            photo_url: photoUrl || null,
             updated_at: new Date().toISOString()
           }).eq('id', jobId);
         } catch (dbErr) {

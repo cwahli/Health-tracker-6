@@ -110,7 +110,9 @@ export function extractBalancedJson(text: string): string {
 // Infinity, and "Infinity || fallback" still evaluates to Infinity because
 // Infinity is truthy. This rejects non-finite and unreasonably large values.
 export function sanitizeMealWeight(value: any, fallback: number, maxGrams: number = 10000): number {
-  const n = Number(value);
+  const raw = value;
+  const debugMeta = { originalData: Array.isArray(raw) ? raw : [raw] };
+  const n = Number(debugMeta.originalData[0]);
   if (!Number.isFinite(n) || n <= 0 || n > maxGrams) return fallback;
   return Math.round(n);
 }

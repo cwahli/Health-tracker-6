@@ -23,6 +23,7 @@ import FullScreenLogViewer from './FullScreenLogViewer';
 import FullScreenInstructionViewer from './FullScreenInstructionViewer';
 import { NutritionLabelTable } from './chat-cards/NutritionLabelTable';
 import { InteractivePlacesMap } from './InteractivePlacesMap';
+import { PortionClarifyCard } from './PortionClarifyCard';
 import exifr from 'exifr';
 import { auth, db } from '../firebase';
 import { getAgentCalibration, getAllAgentCalibrations } from '../utils/agentCalibration';
@@ -2208,7 +2209,7 @@ ${logsText}`);
     }
   };
 
-  const handleSend = async (overrideText?: string | any) => {
+  const handleSend = async (overrideText?: string | any, extraImages?: any[], extraOptions?: any) => {
     // Guard: prevent duplicate parallel requests while a stream is already running
     if (isAnalyzing) {
       console.log('[handleSend] Blocked duplicate request — stream already in progress.');
@@ -2239,8 +2240,8 @@ ${logsText}`);
     setActiveReqId(currentReqId);
     setLiveThoughts({});
     let textToSend = typeof overrideText === 'string' ? overrideText : (overrideText?.text || inputText);
-    const overrideImages = typeof overrideText === 'object' && overrideText?.imageUrls ? overrideText.imageUrls : [];
-    const finalImages = overrideImages.length > 0 ? overrideImages : selectedImages;
+    const overrideImagesInner = typeof overrideText === 'object' && overrideText?.imageUrls ? overrideText.imageUrls : (extraImages || []);
+    const finalImages = overrideImagesInner.length > 0 ? overrideImagesInner : selectedImages;
     
     const compareOnly = typeof overrideText === 'object' && overrideText?.compareOnly;
     const compareItems = typeof overrideText === 'object' && overrideText?.compareItems;
@@ -2511,7 +2512,8 @@ ${logsText}`);
               activeMeal: prunedMealForJob,
               foodLogs: [],
               userSelectedMode: submissionMode,
-              activeScoutItems: scoutItemsForJob
+              activeScoutItems: scoutItemsForJob,
+              portionChoices: extraOptions?.portionChoices
             })
           })
           .then(async (res) => {
@@ -5409,6 +5411,14 @@ ${JSON.stringify(profile, null, 2)}`);
                           autoSendMessage={autoSendMessage}
                           type={type}
                         />
+                        {msg.data?.portionClarify && (
+                          <PortionClarifyCard onResume={(choices: any) => {
+                            if (typeof handleSend === 'function') {
+                              handleSend(JSON.stringify(choices), [], { portionChoices: choices });
+                            }
+                          }} />
+                        )}
+                        <div className="hidden scale-hint">{msg.data?.agentResult?.scoutItems && msg.data.agentResult.scoutItems.map(si => si.estimatedWeightGrams).join(',')}</div>
                         </div>
                       </>
                     );

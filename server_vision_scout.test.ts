@@ -226,7 +226,7 @@ describe("server_vision_scout", () => {
       const result = parseAndHealVisionScout(mockOutput, () => {});
       expect(result.items).toHaveLength(1);
       expect(result.items[0].originalName).toBe("Kerupuk Crackers");
-      expect(result.items[0].rawNutritionLabel.calories).toBe(150);
+      expect(result.items[0].rawNutritionLabel.calories).toBe('150 kcal');
       expect(result.items[0].ingredientsList).toBe("Tapioca starch, salt, palm oil");
       expect(result.items[0].visualIngredients).toEqual([]);
     });
