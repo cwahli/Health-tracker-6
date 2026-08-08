@@ -35,9 +35,12 @@ class JobStoreImpl {
         for (const job of parsed) {
           delete job.abortController;
           if (job.status === 'running') {
-            job.status = 'cancelled';
-            job.finishedAt = new Date().toISOString();
-            job.cancelReason = 'Analysis interrupted by browser reload';
+            const hasServerJob = !!(job.result?.jobId || job.requestId);
+            if (!hasServerJob) {
+              job.status = 'cancelled';
+              job.finishedAt = new Date().toISOString();
+              job.cancelReason = 'Analysis interrupted by browser reload';
+            }
           }
           this.jobs.set(job.id, job);
         }

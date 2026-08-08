@@ -7642,38 +7642,71 @@ Current User Input: "${message}"`) + modeDPromptSuffix;
     let textOutput: string = "";
     let rawParsed: any;
     
-    let dietitianAttempts = 0;
-    const maxDietitianAttempts = 3;
-    let lastDietitianErr: any = null;
+    const canSkipDietitianForPureScale = Boolean(
+      isPureWeightModification &&
+      (priorScoutHasLabelLocks(visionScoutItems) || (activeMeal && activeMeal.lockedNutrientKeys && activeMeal.lockedNutrientKeys.length > 0)) &&
+      activeMeal &&
+      userSelectedMode !== 'compare'
+    );
 
-    while (dietitianAttempts < maxDietitianAttempts) {
-      dietitianAttempts++;
-      try {
-        if (dietitianAttempts > 1) {
-          const delay = lastDietitianErr?.message?.includes('503') || lastDietitianErr?.message?.includes('429') || lastDietitianErr?.message?.includes('UNAVAILABLE') ? 3000 : 1000;
-          addDebugLog(`[Dietitian] Waiting ${delay}ms before retry...`);
-          await new Promise(resolve => setTimeout(resolve, delay));
-          addDebugLog(`[Dietitian] Retrying LLM call (Attempt ${dietitianAttempts} of ${maxDietitianAttempts})...`);
+    if (canSkipDietitianForPureScale) {
+      const targetWeight = (weightRefineIntent.isRefine && (weightRefineIntent as any).weightGrams) ? (weightRefineIntent as any).weightGrams : (activeMeal.weightGrams || 100);
+      addDebugLog(`[Refine] skip-dietitian: Scaled label-locked meal directly to ${targetWeight}g without LLM call.`);
+      sendStreamEvent({ type: 'status', stage: 'dietitian', status: 'completed', message: `Scaled portion to ${targetWeight}g.` });
+      textOutput = JSON.stringify({
+        _internalReasoning: `[Refine] scale-only: Scaled meal directly to ${targetWeight}g`,
+        verdict: { label: "Meal Logged", level: "neutral" },
+        message: `Updated meal portion to ${targetWeight}g.`,
+        mode: "modify",
+        foodData: {
+          ...activeMeal,
+          weightGrams: targetWeight,
+          itemsBreakdown: visionScoutItems.map((item: any) => ({
+            name: item.originalName || item.keyword,
+            weightGrams: item.estimatedWeightGrams || targetWeight,
+            nutrients: item.nutrients,
+            truthNutrients: item.truthNutrients,
+            lockedNutrientKeys: item.lockedNutrientKeys,
+            labelNutrientsPerServing: item.labelNutrientsPerServing,
+            primaryBase100g: item.primaryBase100g,
+          }))
         }
-        const result = await callAndParseFoodAnalysis(llmCallArgs);
-        textOutput = result.textOutput;
-        rawParsed = result.rawParsed;
-        break;
-      } catch (err: any) {
-        lastDietitianErr = err;
-        const isAbort = err.name === 'AbortError' || (err.message && err.message.toLowerCase().includes('abort'));
-        
-        if (isAbort) {
-          addDebugLog(`[Dietitian] Fatal error (Timeout) detected. Throwing immediately without retry.`);
-          throw err;
+      });
+      rawParsed = JSON.parse(textOutput);
+    } else {
+      let dietitianAttempts = 0;
+      const maxDietitianAttempts = 3;
+      let lastDietitianErr: any = null;
+
+      while (dietitianAttempts < maxDietitianAttempts) {
+        dietitianAttempts++;
+        try {
+          if (dietitianAttempts > 1) {
+            const delay = lastDietitianErr?.message?.includes('503') || lastDietitianErr?.message?.includes('429') || lastDietitianErr?.message?.includes('UNAVAILABLE') ? 3000 : 1000;
+            addDebugLog(`[Dietitian] Waiting ${delay}ms before retry...`);
+            await new Promise(resolve => setTimeout(resolve, delay));
+            addDebugLog(`[Dietitian] Retrying LLM call (Attempt ${dietitianAttempts} of ${maxDietitianAttempts})...`);
+          }
+          const result = await callAndParseFoodAnalysis(llmCallArgs);
+          textOutput = result.textOutput;
+          rawParsed = result.rawParsed;
+          break;
+        } catch (err: any) {
+          lastDietitianErr = err;
+          const isAbort = err.name === 'AbortError' || (err.message && err.message.toLowerCase().includes('abort'));
+          
+          if (isAbort) {
+            addDebugLog(`[Dietitian] Fatal error (Timeout) detected. Throwing immediately without retry.`);
+            throw err;
+          }
+          addDebugLog(`[Dietitian Attempt ${dietitianAttempts} Failed] Error: ${err.message}`);
         }
-        addDebugLog(`[Dietitian Attempt ${dietitianAttempts} Failed] Error: ${err.message}`);
       }
-    }
-    
-    if (!textOutput) {
-      addDebugLog(`[Dietitian Failed Permanently] All attempts failed. Last error: ${lastDietitianErr?.message}`);
-      throw lastDietitianErr;
+      
+      if (!textOutput) {
+        addDebugLog(`[Dietitian Failed Permanently] All attempts failed. Last error: ${lastDietitianErr?.message}`);
+        throw lastDietitianErr;
+      }
     }
 
 

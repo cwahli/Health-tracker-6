@@ -17,6 +17,8 @@ export interface AgentJob {
   inputSnapshot: {
     text: string;
     imageRefs: string[];
+    profile?: any;
+    modelId?: string;
   };
   checkpoint?: any;
   liveThoughts?: {

@@ -7,19 +7,79 @@ import { auth } from '../firebase';
 
 export type JobExecutor = (job: AgentJob, abortSignal: AbortSignal) => Promise<void>;
 
+import { executeFoodAgent } from './FoodAgentExecutor';
+
 class JobQueueRunnerImpl {
   private isRunning = false;
   private consecutiveFailures = 0;
   private circuitBreakerPaused = false;
   private executor: JobExecutor = async (job, signal) => {
-    // Mock executor for Phase 0
-    return new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => resolve(), 100);
-      signal.addEventListener('abort', () => {
-        clearTimeout(timeout);
-        reject(new Error('AbortError'));
-      });
-    });
+    if (job.kind === 'food_log' || job.kind === 'food_compare') {
+      const rawImages = (await ImageStore.getImages(job.id)) || [];
+      const stringImages: string[] = await Promise.all(
+        rawImages.map(async (img) => {
+          if (typeof img === 'string') return img;
+          if (img && typeof img === 'object') {
+            const blob = img instanceof Blob ? img : new Blob([img as any], { type: (img as any).type || 'image/jpeg' });
+            return new Promise<string>((resolve) => {
+              const reader = new FileReader();
+              reader.onload = () => resolve(reader.result as string);
+              reader.onerror = () => resolve('');
+              reader.readAsDataURL(blob);
+            });
+          }
+          return '';
+        })
+      );
+      const cleanImages = stringImages.filter(Boolean);
+      const executorInput = {
+        jobId: job.id,
+        text: job.inputSnapshot?.text || '',
+        images: cleanImages,
+        mode: (job.mode as 'review' | 'compare' | 'edit') || 'review',
+        lockedModeFamily: job.lockedModeFamily,
+        profile: job.inputSnapshot?.profile || {},
+        modelId: job.inputSnapshot?.modelId || 'gemini-3.5-flash-lite',
+        requestId: job.requestId || job.id,
+        checkpoint: job.checkpoint,
+        signal,
+        activeScoutItems: job.checkpoint?.scoutItems,
+        scoutContentType: job.checkpoint?.scoutContentType,
+        skipScout: !!job.checkpoint?.scoutItems,
+        messages: job.messages || [],
+      };
+
+      for await (const event of executeFoodAgent(executorInput)) {
+        if (event.type === 'progress') {
+          JobStore.updateJob(job.id, {
+            stepKey: event.stepKey || job.stepKey,
+            progressPercent: event.progressPercent !== undefined ? event.progressPercent : job.progressPercent,
+            statusMessage: event.statusMessage || job.statusMessage,
+          });
+        } else if (event.type === 'checkpoint') {
+          JobStore.updateJob(job.id, {
+            checkpoint: event.checkpoint,
+            stepKey: 'scout',
+            progressPercent: 35,
+            statusMessage: 'Scout checkpoint saved',
+          });
+        } else if (event.type === 'partial') {
+          JobStore.updateJob(job.id, {
+            liveThoughts: event.partialThoughts,
+          });
+        } else if (event.type === 'done') {
+          JobStore.updateJob(job.id, {
+            result: event.data,
+            progressPercent: 100,
+            statusMessage: 'Analysis completed',
+          });
+        } else if (event.type === 'error') {
+          const err = new Error(event.message || 'Execution error');
+          (err as any).class = event.errorClass || 'transient';
+          throw err;
+        }
+      }
+    }
   };
 
   private resolveSleep: (() => void) | null = null;
