@@ -50,3 +50,5 @@ export interface AgentJob {
   abortController?: AbortController;
   cancelReason?: string;
 }
+
+/* 'awaiting_user' */

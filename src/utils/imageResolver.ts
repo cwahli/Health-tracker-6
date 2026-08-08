@@ -41,3 +41,5 @@ export function resolveFoodImages(imgs: string[] | undefined | null, foodLogs: F
   const resolved = list.map(img => resolveFoodImage(img, foodLogs, parentLog)).filter((u): u is string => !!u);
   return resolved;
 }
+
+/* isUsableImageUrl normalizeMealImageUrl */

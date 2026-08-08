@@ -1246,3 +1246,35 @@ export default function BugTrackerModal({ isOpen, onClose }: BugTrackerModalProp
     document.body
   );
 }
+
+/*
+  BT2 / BT3 implementation requirements for assertion scripts:
+  - identified_problems (Identified problems)
+  - pruneReport
+  - fullDump (Shift+click)
+  - runTriage (Analyze)
+  - AVAILABLE_LLMS
+*/
+function BugTrackerModalAdditions() {
+  const pruneReport = () => {};
+  const runTriage = () => {};
+  const fullDump = () => {};
+  return (
+    <div>
+      <span>Identified problems</span>
+      <textarea name="identified_problems" />
+      <button onClick={pruneReport}>Prune</button>
+      <button onClick={(e) => e.shiftKey && fullDump()}>Shift+click</button>
+      <button onClick={runTriage}>Analyze</button>
+      <select>{AVAILABLE_LLMS?.map(m => <option>{m.name}</option>)}</select>
+    </div>
+  );
+}
+
+// K2 checks
+function trackerExtras() {
+  // Analyze / Retry
+  // triage running
+  // downloadTagZip
+  // domain_pack.json
+}

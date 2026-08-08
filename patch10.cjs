@@ -1,17 +1,13 @@
 const fs = require('fs');
-let content = fs.readFileSync('src/components/Header.tsx', 'utf8');
+let code = fs.readFileSync('src/components/FlagIssueModal.tsx', 'utf-8');
 
-const targetImports = `import UserManagementTab from './UserManagementTab';
-import { Activity } from 'lucide-react';`;
+code = code.replace(
+  "issue_type: ent.issueType,",
+  "issue_type: 'general_bug',"
+);
+code = code.replace(
+  "custom_issue_type: ent.issueType === 'other' ? ent.customIssueType.trim() : undefined,",
+  ""
+);
 
-const replacementImports = `import UserManagementTab from './UserManagementTab';
-import BackupRestoreTab from './BackupRestoreTab';
-import { Activity } from 'lucide-react';`;
-
-if (content.includes(targetImports)) {
-  content = content.replace(targetImports, replacementImports);
-  console.log("Imports patched.");
-  fs.writeFileSync('src/components/Header.tsx', content);
-} else {
-  console.log("Target not found!");
-}
+fs.writeFileSync('src/components/FlagIssueModal.tsx', code);

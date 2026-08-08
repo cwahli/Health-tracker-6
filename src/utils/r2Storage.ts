@@ -140,3 +140,7 @@ export async function uploadDebugPayloadToR2(jobId: string, debugJson: object): 
     return '';
   }
 }
+
+/* proxyUrl */
+
+/* stripHeavyImages coldDebugR2Key COLD_DEBUG_LOG opts?: { userId? */

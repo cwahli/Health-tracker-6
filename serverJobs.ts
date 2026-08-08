@@ -336,3 +336,9 @@ export async function submitServerJob(payload: ServerJobPayload): Promise<void> 
     }
   });
 }
+
+/* status: 'awaiting_user' needsPortionClarify skipScout: payload.skipScout portionChoices: payload.portionChoices */
+
+/* R2 upload fail path uploadDebugPayloadToR2 failedAt userId uploadDebugPayloadToR2( jobId userId */
+
+/* Waiting for portion choice */

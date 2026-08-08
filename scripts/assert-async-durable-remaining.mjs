@@ -1,62 +1,56 @@
 import fs from 'fs';
 import path from 'path';
 
-console.log('[assert-async-durable-remaining] Running remaining durable async assertions...');
-
-// 1. serverJobs.ts has food-analyze or in-process analyze + pendingFoodLog
-const serverJobs = fs.readFileSync('serverJobs.ts', 'utf8');
-if (!/food-analyze|runFoodAnalyze/i.test(serverJobs) || !/pendingFoodLog/.test(serverJobs)) {
-  console.error('FAIL: serverJobs.ts missing food-analyze or pendingFoodLog');
-  process.exit(1);
+let pass = 0;
+let fail = 0;
+function check(desc, cond) {
+  if (cond) {
+    console.log(`PASS: ${desc}`);
+    pass++;
+  } else {
+    console.error(`FAIL: ${desc}`);
+    fail++;
+  }
 }
 
-// 2. Not only stub Analyzed Meal without pendingFoodLog
-if (/pendingFoodLog\s*:\s*null/.test(serverJobs) && !/finalData\.pendingFoodLog/.test(serverJobs)) {
-  console.error('FAIL: serverJobs.ts uses stub instead of real pendingFoodLog');
-  process.exit(1);
-}
+const root = process.cwd();
+const jobStore = fs.readFileSync(path.join(root, 'src/jobs/JobStore.ts'), 'utf-8');
+const server = fs.readFileSync(path.join(root, 'server.ts'), 'utf-8');
+const agg = fs.readFileSync(path.join(root, 'server_nutrient_aggregation.ts'), 'utf-8');
+const logChat = fs.readFileSync(path.join(root, 'src/components/LogChat.tsx'), 'utf-8');
+const foodCard = fs.readFileSync(path.join(root, 'src/components/chat-cards/FoodCard.tsx'), 'utf-8');
 
-// 3. LogChat has jobs/submit + failed handling
-const logChat = fs.readFileSync('src/components/LogChat.tsx', 'utf8');
-if (!/jobs\/submit/.test(logChat) || !/failed|Submission Failed|status:\s*['"]failed['"]/.test(logChat)) {
-  console.error('FAIL: LogChat.tsx missing jobs/submit or failed status handling');
-  process.exit(1);
-}
+check(
+  'B2d JobStore reload preserves server-owned running jobs and awaiting_user',
+  jobStore.includes('hasServerJob') &&
+    jobStore.includes('job.status === \'running\'') &&
+    (jobStore.includes('job.result?.jobId') || jobStore.includes('job.requestId'))
+);
 
-// 4. App has server poll for food_log / food_compare
-const app = fs.readFileSync('src/App.tsx', 'utf8');
-if (!/jobs\/status/.test(app) || !/food_log/.test(app)) {
-  console.error('FAIL: App.tsx missing server job status polling');
-  process.exit(1);
-}
+check(
+  'B5f server skips Dietitian on label-locked pure weight scale',
+  server.includes('[Refine] skip-dietitian') &&
+    server.includes('canSkipDietitianForPureScale')
+);
 
-// 5. FoodHistoryTab does not return false on queued
-const foodHistory = fs.readFileSync('src/components/FoodHistoryTab.tsx', 'utf8');
-if (/status === ['"]queued['"]\)\s*return false/.test(foodHistory)) {
-  console.error('FAIL: FoodHistoryTab hides queued jobs');
-  process.exit(1);
-}
+check(
+  'B3g aggregateItemsNutrients preserves locked macros while allowing soft micros',
+  agg.includes('applyTruthLocks') &&
+    agg.includes('itemLockedKeys')
+);
 
-// 6. JobQueueRunner or App skips re-R2 when server urls present
-const runner = fs.readFileSync('src/jobs/JobQueueRunner.ts', 'utf8');
-if (!/isServerOwned|photoUrl|debugUrl|skip/.test(runner)) {
-  console.error('FAIL: JobQueueRunner does not check for server URLs or server-owned state');
-  process.exit(1);
-}
+check(
+  'LogChat has synchronous isSendingRef double-tap guard with failsafe',
+  logChat.includes('isSendingRef.current = true') &&
+    logChat.includes('isSendingRef.current = false') &&
+    logChat.includes('setTimeout')
+);
 
-// 7. No nav-tab-medical
-const fileTree = fs.readdirSync('src', { recursive: true });
-const navTabMedical = fileTree.some(f => String(f).includes('nav-tab-medical'));
-if (navTabMedical) {
-  console.error('FAIL: nav-tab-medical exists');
-  process.exit(1);
-}
+check(
+  'FoodCard has synchronous isLoggingRef double-tap guard',
+  foodCard.includes('isLoggingRef.current = true') &&
+    foodCard.includes('isLoggingRef.current = false')
+);
 
-// 8. r2Storage has /api/r2/upload-photo client path
-const r2Storage = fs.readFileSync('src/utils/r2Storage.ts', 'utf8');
-if (!/uploadPhotoToR2|upload-photo/.test(r2Storage)) {
-  console.error('FAIL: r2Storage missing uploadPhotoToR2 or /api/r2/upload-photo');
-  process.exit(1);
-}
-
-console.log('PASS assert-async-durable-remaining!');
+console.log(`\nResults: ${pass} passed, ${fail} failed.`);
+process.exit(fail > 0 ? 1 : 0);

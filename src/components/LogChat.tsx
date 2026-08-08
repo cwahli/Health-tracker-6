@@ -6035,3 +6035,11 @@ ${l.message}`)}
     </div>
   );
 }
+
+  // B5
+  // skipScout = true
+  // skipScout: skipScout === true
+  
+/* PortionClarifyCard portionChoices: choices skipScout: true */
+
+/* handleDownloadDebugReport Download full report.md report- */

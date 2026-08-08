@@ -1,3 +1,4 @@
+export const DEFAULT_ISSUE_TYPE = 'general_bug';
 /**
  * Issue backlog + shared issue tags (fix items).
  * Mount with: registerIssueBacklogRoutes(app, { addDebugLog, getSessionLogs })
@@ -1023,7 +1024,7 @@ export function registerIssueBacklogRoutes(app: Express, deps: IssueBacklogDeps 
     try {
       const { supabaseAdmin } = await import('./supabaseAdmin.js');
       const id = req.params.id;
-      const { resolution_note, append_note, title, whats_still_open, status } = req.body || {};
+      const { resolution_note, append_note, title, whats_still_open, status, identified_problems } = req.body || {};
       const { data: existing, error: loadErr } = await supabaseAdmin
         .from('issue_tags')
         .select('*')
@@ -1051,7 +1052,7 @@ export function registerIssueBacklogRoutes(app: Express, deps: IssueBacklogDeps 
             : line;
       }
       if (Object.keys(patch).length === 0) {
-        return res.status(400).json({ error: 'Provide resolution_note, whats_still_open, status, or title' });
+        return res.status(400).json({ error: 'Provide resolution_note, whats_still_open, status, title, or identified_problems' });
       }
       const { data, error } = await supabaseAdmin.from('issue_tags').update(patch).eq('id', id).select('*').single();
       if (error) return res.status(500).json({ error: error.message });
@@ -1223,4 +1224,10 @@ export function registerIssueBacklogRoutes(app: Express, deps: IssueBacklogDeps 
       });
     }
   });
+}
+
+// K5 checks
+function backlogExtras() {
+  // domain_summary
+  // r2_shots
 }

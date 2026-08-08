@@ -1,45 +1,26 @@
 const fs = require('fs');
-let content = fs.readFileSync('src/components/Header.tsx', 'utf8');
+let code = fs.readFileSync('server.ts', 'utf-8');
 
-const targetProps = `interface HeaderProps {
-  profile: UserProfile;
-  setProfile: (p: UserProfile) => void;
-  onSaveProfile?: (p: UserProfile) => Promise<void>;
-  hideSensitive: boolean;
-  setHideSensitive: (h: boolean) => void;
-  syncState: 'synced' | 'syncing' | 'local' | 'conflict';
-  onSignOut: () => void;
-  onCloudSync?: () => Promise<void>;
-  onForcePush?: () => Promise<void>;
-  onForcePull?: () => Promise<void>;
-  dbInteractions?: DbInteraction[];
-  quota?: QuotaData;
-  foodLogs?: FoodLog[];
-  activeTab?: string;
-  autoSyncDisabled?: boolean;
-}`;
+// Add import
+const targetImport = "import { registerIssueBacklogRoutes } from './serverIssueBacklog.js';";
+const replImport = "import { registerIssueBacklogRoutes } from './serverIssueBacklog.js';\nimport { registerBugSnapshotRoutes } from './serverBugSnapshot.js';";
+code = code.replace(targetImport, replImport);
 
-const replacementProps = `interface HeaderProps {
-  profile: UserProfile;
-  setProfile: (p: UserProfile) => void;
-  onSaveProfile?: (p: UserProfile) => Promise<void>;
-  hideSensitive: boolean;
-  setHideSensitive: (h: boolean) => void;
-  syncState: 'synced' | 'syncing' | 'local' | 'conflict';
-  onSignOut: () => void;
-  onCloudSync?: () => Promise<void>;
-  onForcePush?: () => Promise<void>;
-  onForcePull?: () => Promise<void>;
-  dbInteractions?: DbInteraction[];
-  quota?: QuotaData;
-  foodLogs?: FoodLog[];
-  setFoodLogs?: (f: FoodLog[]) => void;
-  biomarkerHistory?: any[];
-  setBiomarkerHistory?: (b: any[]) => void;
-  activeTab?: string;
-  autoSyncDisabled?: boolean;
-}`;
+// Add call
+const targetCall = `registerIssueBacklogRoutes(app, {
+  addDebugLog: (msg: string, sessionId?: string) => addDebugLog(msg, sessionId),
+  globalDebugLogs: typeof globalDebugLogs !== 'undefined' ? globalDebugLogs : [],
+  sessionDebugLogs: typeof sessionDebugLogs !== 'undefined' ? sessionDebugLogs : {},
+});`;
+const replCall = targetCall + `\n\n// --- Bug snapshot + AI triage ---
+registerBugSnapshotRoutes(app, {
+  callUnifiedLLM,
+  getS3Client,
+  bucketName: CLOUDFLARE_R2_BUCKET_NAME,
+  publicUrlBase: CLOUDFLARE_R2_PUBLIC_URL,
+  addDebugLog: (msg: string, sessionId?: string) => addDebugLog(msg, sessionId),
+});`;
 
-content = content.replace(targetProps, replacementProps);
-fs.writeFileSync('src/components/Header.tsx', content);
-console.log("Patched");
+code = code.replace(targetCall, replCall);
+
+fs.writeFileSync('server.ts', code);

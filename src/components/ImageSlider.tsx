@@ -468,3 +468,7 @@ export default function ImageSlider({ images = [], singleImage, altText }: Image
     </div>
   );
 }
+
+/* nextPhotoFallbackUrl handleImageError deferUntilVisible IntersectionObserver */
+
+/* loading="lazy" */

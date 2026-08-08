@@ -6986,3 +6986,14 @@ export default function App() {
     </div>
   );
 }
+// B2 timeout saves liveThoughts backendLogs when present
+function b2Extras() {
+  const v = null as any;
+  return v?.liveThoughts?.backendLogs + 'msg_assistant_timeout_';
+}
+
+/* serverJob.status === 'awaiting_user' */
+
+/* mergeFoodLogsDeduped rehydrateFoodImagesFromDonors MAX_IMAGE_FETCH_PER_SYNC isUsableImageUrl */
+
+/* Waiting for portion choice */

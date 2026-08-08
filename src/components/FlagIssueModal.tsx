@@ -162,8 +162,8 @@ export function FlagIssueForm({
         setSubmitting(false);
         return;
       }
-      if (ent.issueType === 'other' && !ent.customIssueType.trim()) {
-        setError(`Please specify the custom issue type in issue #${i + 1}.`);
+      if (false) {
+        // removed
         setSubmitting(false);
         return;
       }
@@ -179,8 +179,8 @@ export function FlagIssueForm({
 
       for (const ent of entries) {
         const body = {
-          issue_type: ent.issueType,
-          custom_issue_type: ent.issueType === 'other' ? ent.customIssueType.trim() : undefined,
+          issue_type: 'general_bug',
+          
           category,
           tag_id: ent.selectedTagId && ent.selectedTagId !== 'new_bug' ? ent.selectedTagId : undefined,
           new_bug_title: ent.selectedTagId === 'new_bug' ? ent.newBugTitle.trim() : undefined,
@@ -393,43 +393,10 @@ export function FlagIssueForm({
                 </div>
               )}
 
-              {/* Issue Type */}
-              <div className="space-y-1">
-                <label className="block text-[11px] font-bold text-white/90">Issue Type</label>
-                <select
-                  value={entry.issueType}
-                  onChange={(e) => updateEntry(idx, { issueType: e.target.value as IssueType })}
-                  className={inputCls}
-                >
-                  {Object.entries(ISSUE_TYPE_LABELS).map(([k, label]) => (
-                    <option key={k} value={k} className="bg-slate-900 text-white">
-                      {label}
-                    </option>
-                  ))}
-                  <option value="other" className="bg-slate-900 text-white">
-                    Other (custom issue type)
-                  </option>
-                </select>
-              </div>
-
-              {/* Custom Issue Type input if "other" */}
-              {entry.issueType === 'other' && (
-                <div className="space-y-1">
-                  <label className="block text-[11px] font-bold text-white/90">Specify Custom Issue Type</label>
-                  <input
-                    type="text"
-                    value={entry.customIssueType}
-                    onChange={(e) => updateEntry(idx, { customIssueType: e.target.value })}
-                    placeholder="e.g. Unit mismatch, missing image, calculation divergence..."
-                    className={inputCls}
-                  />
-                </div>
-              )}
-
               {/* Note */}
               <div className="space-y-1">
                 <label className="block text-[11px] font-bold text-white/90">
-                  Note (optional)
+                  Identified problem (optional)
                 </label>
                 <textarea
                   rows={2}

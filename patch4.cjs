@@ -1,41 +1,23 @@
 const fs = require('fs');
-let appCode = fs.readFileSync('src/App.tsx', 'utf8');
+let code = fs.readFileSync('src/components/FlagIssueModal.tsx', 'utf-8');
 
-const abortReplacement = `
-      // Supabase Fallback Syncing
-      try {
-        console.log("[Offline Recovery] Firebase quota exceeded, but attempting to sync with Supabase...");
-        let sf = foodLogs;
-        let sb = biomarkerHistory;
-        
-        const deletedFoods = profile?.deletedFoodLogIds || {};
-        const deletedBios = profile?.deletedBiomarkerLogIds || {};
-        
-        await syncLogsWithTimeBuckets(db, uid, sf, sb, deletedFoods, deletedBios, (f, b) => {
-          sf = f;
-          sb = b;
-          setFoodLogs(f);
-          setBiomarkerHistory(b);
-        });
+// Replace Note (optional) with Identified problem (optional)
+code = code.replace(
+  '<label className="block text-[11px] font-bold text-white/90">\n                  Note (optional)\n                </label>',
+  '<label className="block text-[11px] font-bold text-white/90">\n                  Identified problem (optional)\n                </label>'
+);
 
-        const { serverFoods, serverBiomarkers } = await fetchAllConsolidatedLogs(db, uid, deletedFoods, deletedBios);
-        if (serverFoods.length > 0) {
-          setFoodLogs(prevFoods => mergeByRecency(prevFoods, serverFoods));
-        }
-        if (serverBiomarkers.length > 0) {
-          setBiomarkerHistory(prevBio => mergeByRecency(prevBio, serverBiomarkers));
-        }
-      } catch (sbErr) {
-        console.warn("[Offline Recovery] Supabase sync also failed.", sbErr);
-      }
-      
-      setSyncState('local');
-      if (typeof syncRootId !== 'undefined' && syncRootId) completeInteraction(syncRootId, false, 0, 'Firebase Quota Exceeded');
-      if (typeof tProfileId !== 'undefined' && tProfileId) completeInteraction(tProfileId, false, 0, 'Firebase Quota Exceeded');
-      (window as any).isManualSyncExecuting = false;
-    };
-`;
+// Remove the Issue Type section
+const issueTypeStart = code.indexOf('{/* Issue Type */}');
+const issueTypeEnd = code.indexOf('{/* Note */}');
+if (issueTypeStart !== -1 && issueTypeEnd !== -1) {
+  code = code.substring(0, issueTypeStart) + code.substring(issueTypeEnd);
+}
 
-appCode = appCode.replace(/      setSyncState\('local'\);\n    };\n\n    if \(forcePull\) {/g, abortReplacement + "\n    if (forcePull) {");
+// In the payload, use issue_type: 'general_bug'
+code = code.replace(
+  'issue_type: ent.issueType === \'other\' ? ent.customIssueType.trim() || \'other\' : ent.issueType,',
+  'issue_type: \'general_bug\','
+);
 
-fs.writeFileSync('src/App.tsx', appCode);
+fs.writeFileSync('src/components/FlagIssueModal.tsx', code);

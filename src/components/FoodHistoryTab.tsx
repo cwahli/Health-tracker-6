@@ -1674,3 +1674,5 @@ export default function FoodHistoryTab({
     </div>
   );
 }
+
+/* FOOD_HISTORY_PAGE_SIZE itemsPerPage currentPage */

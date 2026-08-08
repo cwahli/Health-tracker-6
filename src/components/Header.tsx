@@ -17,6 +17,7 @@ import FullScreenLogViewer from './FullScreenLogViewer';
 import ApiCallTrackerModal from './ApiCallTrackerModal';
 import NutritionDataBrowserModal from './NutritionDataBrowserModal';
 import BugTrackerModal from './BugTrackerModal';
+import BugSnapshotFab, { BugSnapshotSettingsToggle } from './BugSnapshotFab';
 import UserManagementTab from './UserManagementTab';
 import BackupRestoreTab from './BackupRestoreTab';
 import { FoodCatalogAdminTab } from './FoodCatalogAdminTab';
@@ -3274,6 +3275,7 @@ export default function Header({
             <div className="p-6 overflow-y-auto space-y-6 text-left flex-1">
               
               {/* Undo & Snapshots Control inside Settings */}
+              <BugSnapshotSettingsToggle />
               {onOpenUndo && (
                 <div className="p-3.5 bg-amber-50/70 dark:bg-amber-950/25 border border-amber-200/80 dark:border-amber-800/50 rounded-2xl flex items-center justify-between shadow-xs">
                   <div>
@@ -4396,6 +4398,19 @@ export default function Header({
       <BugTrackerModal
         isOpen={showBugTracker}
         onClose={() => setShowBugTracker(false)}
+      />
+      <BugSnapshotFab id="bug-snapshot-fab"
+        isAdmin={profile?.email?.toLowerCase().trim() === 'cwah.liu@gmail.com' || false}
+        firebaseUid={auth.currentUser?.uid}
+        activeTab={activeTab}
+        profile={profile}
+        biomarkers={biomarkers}
+        biomarkerHistory={biomarkerHistory}
+        getModalContext={async () => {
+          const allJobs = JobStore.getAllJobs();
+          const pendingFoodLog = allJobs[0]?.result?.pendingFoodLog || foodLogs?.[0] || null;
+          return { pendingFoodLog, activeTab, timestamp: Date.now() };
+        }}
       />
     </>
   );

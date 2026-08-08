@@ -1,8 +1,30 @@
 const fs = require('fs');
-let content = fs.readFileSync('server_vision_scout.ts', 'utf8');
-
-content = content.replace(/- AMBIGUITY & COMPLETENESS: Extract EVERYTHING, including blurred items or unknown liquids \(use generic names like 'unknown beverage' and 'Low' cBRANCH B/g, "- AMBIGUITY & COMPLETENESS: Extract EVERYTHING, including blurred items or unknown liquids (use generic names like 'unknown beverage' and 'Low' confidence).\n\nBRANCH B");
-content = content.replace(/=== SYSTEM CONSTRAINTS ===EM CONSTRAINTS ===/g, "=== SYSTEM CONSTRAINTS ===");
-content = content.replace(/"Top Row"\)\.\nSTEP 3/g, '"Top Row").\n\nSTEP 3');
-
-fs.writeFileSync('server_vision_scout.ts', content);
+const code = fs.readFileSync('src/components/Header.tsx', 'utf-8');
+const target = `<BugTrackerModal
+        isOpen={showBugTracker}
+        onClose={() => setShowBugTracker(false)}
+      />
+    </>
+  );
+}`;
+const repl = `<BugTrackerModal
+        isOpen={showBugTracker}
+        onClose={() => setShowBugTracker(false)}
+      />
+      <BugSnapshotFab
+        isAdmin={profile?.email?.toLowerCase().trim() === 'cwah.liu@gmail.com' || false}
+        firebaseUid={auth.currentUser?.uid}
+        activeTab={activeTab}
+        profile={profile}
+        biomarkers={biomarkers}
+        biomarkerHistory={biomarkerHistory}
+        getModalContext={async () => {
+          const allJobs = JobStore.getAllJobs();
+          const pendingFoodLog = allJobs[0]?.result?.pendingFoodLog || foodLogs?.[0] || null;
+          return { pendingFoodLog, activeTab, timestamp: Date.now() };
+        }}
+      />
+    </>
+  );
+}`;
+fs.writeFileSync('src/components/Header.tsx', code.replace(target, repl));

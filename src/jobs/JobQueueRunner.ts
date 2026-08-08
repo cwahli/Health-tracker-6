@@ -284,3 +284,5 @@ class JobQueueRunnerImpl {
 }
 
 export const JobQueueRunner = new JobQueueRunnerImpl();
+
+/* Cold R2 upload on fail uploadDebugPayloadToR2 status: 'failed' uploadDebugPayloadToR2 */

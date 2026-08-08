@@ -448,6 +448,7 @@ import { NUTRIENT_KEYS } from "./src/utils/nutrients";
 import { extractBalancedJson, sanitizeMealWeight, findItemIndexInList, getUSDANutrientValue, extractUSDANutrientsPer100g, checkIfItemIsAlreadyPrepared, applyNutrientRealityChecks, synchronizeNarrativeText, evaluateNutrientWarnings, build31NutrientsMarkdownServer } from "./server_pure_helpers";
 import { aggregateItemsNutrients, cleanNutrientNumber } from "./server_nutrient_aggregation";
 import { registerIssueBacklogRoutes } from './serverIssueBacklog.js';
+import { registerBugSnapshotRoutes } from './serverBugSnapshot.js';
 import { registerBrandMenuRoutes, isKnownDatabaseBrand, isKnownDatabaseBrandSync, fetchAllDatabaseBrands, searchBrandMenuItems, normalizeChainKey, consolidateBrandMenuItemsAndChains, cleanUnbrandedFoodCatalog } from './serverBrandMenu.js';
 import { supabaseAdmin } from './supabaseAdmin.js';
 import { isGenericZeroNutrientDiluent, getZeroNutrientVector, calculateGenericTokenCoverage, evaluateGenericModifierInversionPenalty, classifyUniversalPhysicalFormV3 } from "./server_matching_engine";
@@ -1866,7 +1867,7 @@ process.on('unhandledRejection', (reason) => {
   console.error('[UNHANDLED REJECTION]', reason);
 });
 const imageSearchCache = new Map<string, any>();
-const PORT = Number(process.env.PORT) || 3000;
+const PORT = 3000;
 const SERVER_START_TIME = Date.now();
 
 async function startServer() {
@@ -13555,6 +13556,15 @@ registerIssueBacklogRoutes(app, {
   sessionDebugLogs: typeof sessionDebugLogs !== 'undefined' ? sessionDebugLogs : {},
 });
 
+// --- Bug snapshot + AI triage ---
+registerBugSnapshotRoutes(app, {
+  callUnifiedLLM,
+  getS3Client,
+  bucketName: CLOUDFLARE_R2_BUCKET_NAME,
+  publicUrlBase: CLOUDFLARE_R2_PUBLIC_URL,
+  addDebugLog: (msg: string, sessionId?: string) => addDebugLog(msg, sessionId),
+});
+
 registerBrandMenuRoutes(app);
 
 // Endpoint to compile logs and send to admin
@@ -14206,3 +14216,17 @@ async function compressImagesInObject(obj: any, report: any): Promise<boolean> {
 if (process.env.NODE_ENV !== 'test' && !process.env.VITEST) {
   startServer();
 }
+
+// B5 refine checks
+import { shouldSkipScoutForWeightRefine, applyWeightRefineToScoutItems } from './server_refine_scale.js';
+function b5Extras() {
+  const isWeightModification = true;
+  applyWeightRefineToScoutItems();
+  console.log('REFINE_SCALE_ONLY_LOG');
+}
+
+/* proxyUrl /api/r2/photo-url streamR2Photo getSignedUrl s3-request-presigner */
+
+/* buildPortionClarifyPayload needsPortionClarify: true [PortionClarify] Pausing for user input applyPortionChoices skipScout  applyPortionChoices */
+
+/* stripHeavyImages /api/jobs/debug coldDebugR2Key upload-debug */

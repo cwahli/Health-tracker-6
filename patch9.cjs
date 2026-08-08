@@ -1,17 +1,9 @@
 const fs = require('fs');
-let content = fs.readFileSync('src/App.tsx', 'utf8');
+let code = fs.readFileSync('src/components/Header.tsx', 'utf-8');
 
-const target = `<Header
-        profile={profile}
-        setProfile={(p) => {`;
+code = code.replace(
+  '<BugSnapshotFab',
+  '<BugSnapshotFab id="bug-snapshot-fab"'
+);
 
-const replacement = `<Header
-        biomarkerHistory={biomarkerHistory}
-        setBiomarkerHistory={setBiomarkerHistory}
-        setFoodLogs={setFoodLogs}
-        profile={profile}
-        setProfile={(p) => {`;
-
-content = content.replace(target, replacement);
-fs.writeFileSync('src/App.tsx', content);
-console.log("Patched App.tsx");
+fs.writeFileSync('src/components/Header.tsx', code);
