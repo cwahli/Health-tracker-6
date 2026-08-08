@@ -10727,7 +10727,7 @@ Your output MUST be a valid JSON object matching the schema provided.`;
       }
 
       let textOutput = "";
-      if (process.env.GEMINI_API_KEY === undefined) {
+      if (!getGeminiApiKey()) {
         textOutput = JSON.stringify(mockData);
       } else {
         let historyText = "";
@@ -11500,7 +11500,8 @@ app.post("/api/gemini/insight-analyze", async (req, res) => {
     }
 
     const ai = getGeminiClient();
-    if (!process.env.GEMINI_API_KEY || process.env.GEMINI_API_KEY === "MOCK_KEY" || process.env.GEMINI_API_KEY === "" || process.env.GEMINI_API_KEY.startsWith("YOUR_")) {
+    const apiKey = getGeminiApiKey();
+    if (!apiKey || apiKey === "MOCK_KEY" || apiKey.startsWith("YOUR_")) {
       return res.json({
         report: {
           timestamp: new Date().toISOString(),

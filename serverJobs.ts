@@ -2,20 +2,6 @@ import { uploadPhotoToR2, uploadDebugPayloadToR2 } from './src/utils/r2Storage';
 import { supabase, isSupabaseConfigured } from './src/utils/supabaseClient';
 import { supabaseAdmin } from './supabaseAdmin';
 
-export const inMemoryServerJobs = new Map<string, any>();
-
-export function getInMemoryServerJob(jobId: string) {
-  return inMemoryServerJobs.get(jobId) || null;
-}
-
-export function listInMemoryServerJobs(userId?: string) {
-  const jobs = Array.from(inMemoryServerJobs.values());
-  if (userId) {
-    return jobs.filter(j => j.user_id === userId);
-  }
-  return jobs;
-}
-
 export interface ServerJobPayload {
   jobId: string;
   userId?: string;
@@ -34,6 +20,20 @@ export interface ServerJobPayload {
   userSelectedMode?: string;
   activeScoutItems?: any[];
   portionChoices?: any;
+}
+
+export const inMemoryServerJobs = new Map<string, any>();
+
+export function getInMemoryServerJob(jobId: string) {
+  return inMemoryServerJobs.get(jobId) || null;
+}
+
+export function listInMemoryServerJobs(userId?: string) {
+  const jobs = Array.from(inMemoryServerJobs.values());
+  if (userId) {
+    return jobs.filter(j => j.user_id === userId);
+  }
+  return jobs;
 }
 
 export async function submitServerJob(payload: ServerJobPayload): Promise<void> {
@@ -157,17 +157,23 @@ export async function submitServerJob(payload: ServerJobPayload): Promise<void> 
           signal: controller.signal
         });
       } catch (fetchErr: any) {
-        try {
-          response = await fetch(`http://localhost:${port}/api/gemini/food-analyze?stream=true`, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'X-Session-ID': 'server-job-' + jobId
-            },
-            body: JSON.stringify(bodyData),
-            signal: controller.signal
-          });
-        } catch (retryErr) {
+        if (baseUrl.includes('127.0.0.1') && !process.env.INTERNAL_BASE_URL) {
+          try {
+            response = await fetch(`http://localhost:${port}/api/gemini/food-analyze?stream=true`, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'X-Session-ID': 'server-job-' + jobId
+              },
+              body: JSON.stringify(bodyData),
+              signal: controller.signal
+            });
+          } catch (retryErr: any) {
+            if (chunkTimer) clearTimeout(chunkTimer);
+            clearTimeout(globalTimeout);
+            throw retryErr;
+          }
+        } else {
           if (chunkTimer) clearTimeout(chunkTimer);
           clearTimeout(globalTimeout);
           throw fetchErr;
@@ -190,7 +196,6 @@ export async function submitServerJob(payload: ServerJobPayload): Promise<void> 
       const decoder = new TextDecoder();
       let buffer = '';
       finalData = null;
-      let streamErrorMessage: string | null = null;
 
       try {
         while (true) {
@@ -211,6 +216,11 @@ export async function submitServerJob(payload: ServerJobPayload): Promise<void> 
 
             try {
               const parsed = JSON.parse(rawData);
+              if (parsed.error) {
+                const errMsg = typeof parsed.error === 'string' ? parsed.error : JSON.stringify(parsed.error);
+                accumulatedLogs.push(`[error] ${errMsg}`);
+                throw new Error(errMsg);
+              }
               if (parsed.type === 'log') {
                 accumulatedLogs.push(`[${parsed.logType || 'info'}] ${parsed.message}`);
                 
@@ -230,14 +240,11 @@ export async function submitServerJob(payload: ServerJobPayload): Promise<void> 
                 }
               } else if (parsed.final === true && parsed.result) {
                 finalData = parsed.result;
-              } else if (parsed.error) {
-                const errMsg = typeof parsed.error === 'string'
-                  ? parsed.error
-                  : (parsed.error.message || 'Analysis engine returned an error.');
-                streamErrorMessage = errMsg;
-                accumulatedLogs.push(`[error] ${errMsg}`);
               }
-            } catch (err) {
+            } catch (err: any) {
+              if (err.message && !err.message.includes('JSON')) {
+                throw err;
+              }
               // ignore JSON parse error on incomplete chunks
             }
           }
@@ -248,7 +255,11 @@ export async function submitServerJob(payload: ServerJobPayload): Promise<void> 
       }
 
       if (!finalData) {
-        throw new Error(streamErrorMessage || 'Stream finished but no final result data was received');
+        const lastErr = [...accumulatedLogs].reverse().find(l => l.startsWith('[error]'));
+        if (lastErr) {
+          throw new Error(lastErr.replace(/^\[error\]\s*/, ''));
+        }
+        throw new Error('Stream finished but no final result data was received');
       }
 
       if (finalData.needsPortionClarify) {
@@ -259,7 +270,6 @@ export async function submitServerJob(payload: ServerJobPayload): Promise<void> 
           memJob.clean_result = finalData;
           memJob.updated_at = new Date().toISOString();
         }
-
         if (isSupabaseConfigured) {
           await supabaseAdmin.from('agent_jobs').update({
             status: 'awaiting_user',
@@ -395,22 +405,16 @@ export async function submitServerJob(payload: ServerJobPayload): Promise<void> 
         try {
           await supabaseAdmin.from('agent_jobs').update({
             status: 'failed',
-            status_message: err.message || 'Server analysis failed or timed out. Please tap Retry.',
-            clean_result: errorCleanResult,
-            debug_url: errorCleanResult.debugUrl || null,
+            status_message: err.message || 'Server analysis failed',
             photo_url: photoUrl || null,
-            updated_at: new Date().toISOString()
+            debug_url: errorCleanResult.debugUrl || null,
+            clean_result: errorCleanResult,
+            updated_at: new Date().toISOString(),
           }).eq('id', jobId);
-        } catch (dbErr) {
-          console.error('[ServerJobs] Failed to update failure status in Supabase:', dbErr);
+        } catch (uErr) {
+          console.error('[ServerJobs] Failed to update error state in Supabase:', uErr);
         }
       }
     }
   });
 }
-
-/* status: 'awaiting_user' needsPortionClarify skipScout: payload.skipScout portionChoices: payload.portionChoices */
-
-/* R2 upload fail path uploadDebugPayloadToR2 failedAt userId uploadDebugPayloadToR2( jobId userId */
-
-/* Waiting for portion choice */
