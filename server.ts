@@ -2039,7 +2039,7 @@ async function startServer() {
 
 // Initialize Gemini SDK with telemetry header
 const getGeminiClient = () => {
-  const apiKey = process.env.GEMINI_API_KEY;
+  const apiKey = process.env.GEMINI_API_KEY || process.env.AISTUDIO_API_KEY || process.env.GOOGLE_GENAI_API_KEY || process.env.API_KEY;
   if (!apiKey) {
     console.warn("WARNING: GEMINI_API_KEY is not defined in the environment.");
   }
@@ -3949,7 +3949,7 @@ User Message: ${message}
     addDebugLog(`[FrontDesk] Dispatching prompt to model: "${targetModel}".`);
     addDebugLog(`[FrontDesk-Prompt] User Prompt:\n${prompt}`);
 
-    const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+    const ai = getGeminiClient();
     const response = await ai.models.generateContent({
       model: targetModel,
       contents: prompt,
@@ -13542,7 +13542,7 @@ app.post("/api/gemini/menu-image-search", async (req, res) => {
   }
 
   let allResults: { label: string; imageUrl: string | null }[] = [];
-  const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+  const ai = getGeminiClient();
   
   for (const batch of batches) {
     const promptText = `Briefly describe each of these dishes: ${batch.join(", ")}. Do not include URLs or format as JSON. Provide a short paragraph for each.`;

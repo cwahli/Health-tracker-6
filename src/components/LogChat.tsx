@@ -5425,11 +5425,14 @@ ${JSON.stringify(profile, null, 2)}`);
                           type={type}
                         />
                         {msg.data?.portionClarify && (
-                          <PortionClarifyCard onResume={(choices: any) => {
-                            if (typeof handleSend === 'function') {
-                              handleSend(JSON.stringify(choices), [], { portionChoices: choices });
-                            }
-                          }} />
+                          <PortionClarifyCard
+                            portionClarify={msg.data.portionClarify}
+                            onConfirm={(choices: any) => {
+                              if (typeof handleSend === 'function') {
+                                handleSend(JSON.stringify(choices), [], { portionChoices: choices });
+                              }
+                            }}
+                          />
                         )}
                         <div className="hidden scale-hint">{msg.data?.agentResult?.scoutItems && msg.data.agentResult.scoutItems.map(si => si.estimatedWeightGrams).join(',')}</div>
                         </div>

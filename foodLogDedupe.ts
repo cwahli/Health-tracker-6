@@ -1,5 +1,5 @@
-import { toYYYYMMDD } from './dateUtils';
-import { isUsableImageUrl, resolveMealImageCandidates } from './foodImageSources';
+import { toYYYYMMDD } from './src/utils/dateUtils';
+import { isUsableImageUrl, resolveMealImageCandidates } from './src/utils/foodImageSources';
 
 export interface DedupableFoodLog {
   id?: string;

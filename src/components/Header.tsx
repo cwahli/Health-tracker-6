@@ -1488,7 +1488,7 @@ export default function Header({
                 activeTab,
                 jobId: active.id,
                 kind: active.kind,
-                mode: active.mode || active.inputSnapshot?.mode,
+                mode: (active as any).mode || (active as any).inputSnapshot?.mode,
                 status: active.status,
                 progressPercent: active.progressPercent,
                 result: active.result,

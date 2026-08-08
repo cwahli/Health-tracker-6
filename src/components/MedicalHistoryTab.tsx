@@ -1,6 +1,6 @@
 import { toYYYYMMDD } from "../utils/dateUtils";
 import React, { useState, useMemo, useEffect, useCallback } from 'react';
-import { UserProfile, BiomarkerLog, ChatMessage } from '../types';
+import { UserProfile, BiomarkerLog, ChatMessage, FoodLog } from '../types';
 import { translations } from '../utils/translations';
 import { ShieldAlert, ClipboardList, Trash2, ChevronDown, ChevronUp, LineChart as LineChartIcon, BrainCircuit, AlertCircle, Clock, CheckCircle2, EyeOff } from 'lucide-react';
 import { standardizeUnit, reverseStandardizeUnit, formatNormalRange } from '../utils/unitConversion';
@@ -20,6 +20,9 @@ interface MedicalHistoryTabProps {
   profile: UserProfile;
   biomarkers: { [key: string]: number | string };
   biomarkerHistory: BiomarkerLog[];
+  foodLogs?: FoodLog[];
+  onApplyDataSanitize?: (selected: any[]) => Promise<void>;
+  [key: string]: any;
   hideSensitive: boolean;
   onDeleteBiomarkerLog: (id: string) => void;
   onBatchCombineBiomarkers?: (combinations: {targetKey: string, targetDef: any, mergedLogs: any[], sourceKeysToDelete: string[]}[]) => Promise<void>;
