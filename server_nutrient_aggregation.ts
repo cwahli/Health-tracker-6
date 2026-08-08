@@ -420,9 +420,11 @@ export function aggregateItemsNutrients(
 
     // Force locked truth nutrients for the individual item BEFORE clean precision clamp.
     Object.entries(itemTruthNutrients).forEach(([key, val]) => {
-      const num = Number(val);
-      if (Number.isFinite(num)) {
-        itemNutrients[key] = num;
+      if (itemLockedKeys.has(key)) {
+        const num = Number(val);
+        if (Number.isFinite(num)) {
+          itemNutrients[key] = num;
+        }
       }
     });
 

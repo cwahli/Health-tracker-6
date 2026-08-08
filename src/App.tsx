@@ -2913,7 +2913,7 @@ export default function App() {
           const uid = user.uid;
           if (!isDemoUser) {
             const hasSyncedThisSession = sessionStorage.getItem('synced_' + uid) === 'true';
-            const isLocalDataEmpty = !loadedProfile?.lastUpdatedAt || loadedHistory.length === 0;
+            const isLocalDataEmpty = !loadedProfile?.lastUpdatedAt && loadedFoods.length === 0 && loadedHistory.length === 0;
             
             if (!hasSyncedThisSession || isLocalDataEmpty) {
               console.log("[Auth] Signed in user detected. Syncing with Cloud Firestore to restore account data...");

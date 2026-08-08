@@ -1488,6 +1488,8 @@ export const FoodCard: React.FC<AgentCardProps & {
     setInputText, fileInputRef
   } = props;
 
+  const isLoggingRef = React.useRef(false);
+
   if (msg.isLive) {
     return null;
   }
@@ -3309,7 +3311,9 @@ export const FoodCard: React.FC<AgentCardProps & {
                         <button
                           type="button"
                           onClick={() => {
+                            if (isLoggingRef.current) return;
                             if (msg.data?.pendingFoodLog && onLogFood) {
+                              isLoggingRef.current = true;
                               const foodToLog = {
                                 ...msg.data.pendingFoodLog,
                                 scoutItems: msg.data.scoutItems || [],
@@ -3318,8 +3322,11 @@ export const FoodCard: React.FC<AgentCardProps & {
                                   ? msg.data.pendingFoodLog.imageUrls
                                   : (messageImages.length > 0 ? messageImages : undefined)
                               };
-                              onLogFood(foodToLog as FoodLog);
+                              const logResult = onLogFood(foodToLog as FoodLog);
                               setLoggedMessageIds?.(prev => [...prev, msg.id]);
+                              Promise.resolve(logResult).finally(() => {
+                                isLoggingRef.current = false;
+                              });
                             }
                           }}
                           className="w-full py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold shadow-md shadow-indigo-600/10 flex items-center justify-center gap-1.5 transition-all cursor-pointer font-sans"

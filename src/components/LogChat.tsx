@@ -484,6 +484,8 @@ export default function LogChat({
     return type === targetType;
   };
 
+  const isSendingRef = useRef(false);
+
 
   const [showDataUsed, setShowDataUsed] = useState(false);
   const [showFullScreenConv, setShowFullScreenConv] = useState(false);
@@ -2209,12 +2211,13 @@ ${logsText}`);
     }
   };
 
-  const handleSend = async (overrideText?: string | any, extraImages?: any[], extraOptions?: any) => {
-    // Guard: prevent duplicate parallel requests while a stream is already running
-    if (isAnalyzing) {
-      console.log('[handleSend] Blocked duplicate request — stream already in progress.');
+  const handleSend = async (overrideText?: string | { text?: string; imageUrls?: string[]; compareOnly?: boolean; compareItems?: string[]; sourceMsgId?: string; skipScout?: boolean; activeScoutItems?: any; scoutContentType?: any; overrideMode?: string; userSelectedMode?: string; } | any, extraImages?: any[], extraOptions?: any) => {
+    if (isSendingRef.current || isAnalyzing) {
+      console.log('[handleSend] Blocked — analysis already in progress or duplicate tap.');
       return;
     }
+    isSendingRef.current = true;
+    const failsafe = setTimeout(() => { isSendingRef.current = false; }, 60000);
     // Check credit limits before proceeding
     if (profile) {
       const creditInfo = getAvailableCredits(profile);
@@ -3993,6 +3996,8 @@ ${logsText}`);
         ]);
       }
     } finally {
+      clearTimeout(failsafe);
+      isSendingRef.current = false;
       setIsAnalyzing(false);
       setActiveReqId(null);
     }
