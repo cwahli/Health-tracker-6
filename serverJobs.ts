@@ -2,6 +2,20 @@ import { uploadPhotoToR2, uploadDebugPayloadToR2 } from './src/utils/r2Storage';
 import { supabase, isSupabaseConfigured } from './src/utils/supabaseClient';
 import { supabaseAdmin } from './supabaseAdmin';
 
+export const inMemoryServerJobs = new Map<string, any>();
+
+export function getInMemoryServerJob(jobId: string) {
+  return inMemoryServerJobs.get(jobId) || null;
+}
+
+export function listInMemoryServerJobs(userId?: string) {
+  const jobs = Array.from(inMemoryServerJobs.values());
+  if (userId) {
+    return jobs.filter(j => j.user_id === userId);
+  }
+  return jobs;
+}
+
 export interface ServerJobPayload {
   jobId: string;
   userId?: string;
@@ -27,18 +41,22 @@ export async function submitServerJob(payload: ServerJobPayload): Promise<void> 
   const dbKind = kind || 'food_log';
   const dbMode = mode || 'review';
 
+  // In-memory record for offline / Supabase-unconfigured environments
+  const initialJobRecord = {
+    id: jobId,
+    user_id: userId,
+    kind: dbKind,
+    mode: dbMode,
+    status: 'running',
+    progress_percent: 5,
+    status_message: 'Starting cloud food analysis...',
+    updated_at: new Date().toISOString()
+  };
+  inMemoryServerJobs.set(jobId, initialJobRecord);
+
   // 1. Initial status write to Supabase
   if (isSupabaseConfigured) {
-    const { error } = await supabaseAdmin.from('agent_jobs').upsert({
-      id: jobId,
-      user_id: userId,
-      kind: dbKind,
-      mode: dbMode,
-      status: 'running',
-      progress_percent: 5,
-      status_message: 'Starting cloud food analysis...',
-      updated_at: new Date().toISOString()
-    }, { onConflict: 'id' });
+    const { error } = await supabaseAdmin.from('agent_jobs').upsert(initialJobRecord, { onConflict: 'id' });
 
     if (error) {
       console.error('[ServerJobs] initial upsert failed:', error);
@@ -59,6 +77,13 @@ export async function submitServerJob(payload: ServerJobPayload): Promise<void> 
     const updateSupabaseProgress = async (progress: number, message: string) => {
       currentProgress = progress;
       currentStatusMessage = message;
+      const memJob = inMemoryServerJobs.get(jobId);
+      if (memJob) {
+        memJob.progress_percent = progress;
+        memJob.status_message = message;
+        memJob.photo_url = photoUrl || null;
+        memJob.updated_at = new Date().toISOString();
+      }
       const now = Date.now();
       if (now - lastProgressUpdate > progressThrottleMs) {
         lastProgressUpdate = now;
@@ -132,9 +157,21 @@ export async function submitServerJob(payload: ServerJobPayload): Promise<void> 
           signal: controller.signal
         });
       } catch (fetchErr: any) {
-        if (chunkTimer) clearTimeout(chunkTimer);
-        clearTimeout(globalTimeout);
-        throw fetchErr;
+        try {
+          response = await fetch(`http://localhost:${port}/api/gemini/food-analyze?stream=true`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-Session-ID': 'server-job-' + jobId
+            },
+            body: JSON.stringify(bodyData),
+            signal: controller.signal
+          });
+        } catch (retryErr) {
+          if (chunkTimer) clearTimeout(chunkTimer);
+          clearTimeout(globalTimeout);
+          throw fetchErr;
+        }
       }
 
       if (!response.ok) {
@@ -194,9 +231,11 @@ export async function submitServerJob(payload: ServerJobPayload): Promise<void> 
               } else if (parsed.final === true && parsed.result) {
                 finalData = parsed.result;
               } else if (parsed.error) {
-                streamErrorMessage = typeof parsed.error === 'string'
+                const errMsg = typeof parsed.error === 'string'
                   ? parsed.error
                   : (parsed.error.message || 'Analysis engine returned an error.');
+                streamErrorMessage = errMsg;
+                accumulatedLogs.push(`[error] ${errMsg}`);
               }
             } catch (err) {
               // ignore JSON parse error on incomplete chunks
@@ -213,6 +252,14 @@ export async function submitServerJob(payload: ServerJobPayload): Promise<void> 
       }
 
       if (finalData.needsPortionClarify) {
+        const memJob = inMemoryServerJobs.get(jobId);
+        if (memJob) {
+          memJob.status = 'awaiting_user';
+          memJob.status_message = finalData.message || 'Please clarify portion sizes.';
+          memJob.clean_result = finalData;
+          memJob.updated_at = new Date().toISOString();
+        }
+
         if (isSupabaseConfigured) {
           await supabaseAdmin.from('agent_jobs').update({
             status: 'awaiting_user',
@@ -262,6 +309,17 @@ export async function submitServerJob(payload: ServerJobPayload): Promise<void> 
           if (debugUrl) cleanResult.debugUrl = debugUrl;
         } catch (r2Err) {
           console.warn('[ServerJobs] R2 debug upload failed (non-fatal):', r2Err);
+        }
+
+        const memJob = inMemoryServerJobs.get(jobId);
+        if (memJob) {
+          memJob.status = 'succeeded';
+          memJob.progress_percent = 100;
+          memJob.status_message = 'Analysis complete';
+          memJob.photo_url = photoUrl || null;
+          memJob.debug_url = cleanResult.debugUrl || null;
+          memJob.clean_result = cleanResult;
+          memJob.updated_at = new Date().toISOString();
         }
 
         if (isSupabaseConfigured) {
@@ -322,6 +380,15 @@ export async function submitServerJob(payload: ServerJobPayload): Promise<void> 
         if (debugUrl) errorCleanResult.debugUrl = debugUrl;
       } catch (r2Fail) {
         console.warn('[ServerJobs] R2 debug upload on fail (non-fatal):', r2Fail);
+      }
+
+      const memJob = inMemoryServerJobs.get(jobId);
+      if (memJob) {
+        memJob.status = 'failed';
+        memJob.status_message = err.message || 'Server analysis failed';
+        memJob.photo_url = photoUrl || null;
+        memJob.clean_result = errorCleanResult;
+        memJob.updated_at = new Date().toISOString();
       }
 
       if (isSupabaseConfigured) {

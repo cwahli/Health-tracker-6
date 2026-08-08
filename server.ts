@@ -1676,7 +1676,12 @@ app.get('/api/jobs/status', async (req, res) => {
     const { jobId, userId } = req.query;
     const { isSupabaseConfigured } = await import('./src/utils/supabaseClient');
     if (!isSupabaseConfigured) {
-      return res.json({ jobs: [] });
+      const { getInMemoryServerJob, listInMemoryServerJobs } = await import('./serverJobs');
+      if (jobId) {
+        const memJob = getInMemoryServerJob(String(jobId));
+        return res.json({ jobs: memJob ? [memJob] : [] });
+      }
+      return res.json({ jobs: listInMemoryServerJobs(userId ? String(userId) : undefined) });
     }
     const { supabaseAdmin } = await import('./supabaseAdmin');
     let query = supabaseAdmin.from('agent_jobs').select('*');
@@ -1734,7 +1739,21 @@ app.get('/api/jobs/debug', async (req, res) => {
     }
     const { isSupabaseConfigured } = await import('./src/utils/supabaseClient');
     if (!isSupabaseConfigured) {
-      return res.status(404).json({ error: 'Supabase is not configured' });
+      const { getInMemoryServerJob } = await import('./serverJobs');
+      const memJob = getInMemoryServerJob(String(jobId));
+      if (memJob) {
+        return res.json({
+          jobId: memJob.id,
+          userId: memJob.user_id,
+          kind: memJob.kind,
+          mode: memJob.mode,
+          status: memJob.status,
+          result: memJob.clean_result,
+          backendLogs: memJob.clean_result?.backendLogs || '',
+          completedAt: memJob.updated_at
+        });
+      }
+      return res.status(404).json({ error: 'Job not found in memory' });
     }
     const { supabaseAdmin } = await import('./supabaseAdmin');
     const { data: job, error } = await supabaseAdmin
@@ -2037,11 +2056,22 @@ async function startServer() {
     res.json({ status: "ok" });
   });
 
+// Robust API key resolver supporting standard GEMINI_API_KEY, Google Cloud GOOGLE_API_KEY, or API_KEY
+const getGeminiApiKey = (): string => {
+  return (
+    process.env.GEMINI_API_KEY ||
+    process.env.GOOGLE_API_KEY ||
+    process.env.API_KEY ||
+    process.env.GEMINI_API_KEYS?.split(',')[0]?.trim() ||
+    ''
+  );
+};
+
 // Initialize Gemini SDK with telemetry header
 const getGeminiClient = () => {
-  const apiKey = process.env.GEMINI_API_KEY || process.env.AISTUDIO_API_KEY || process.env.GOOGLE_GENAI_API_KEY || process.env.API_KEY;
+  const apiKey = getGeminiApiKey();
   if (!apiKey) {
-    console.warn("WARNING: GEMINI_API_KEY is not defined in the environment.");
+    console.warn("WARNING: GEMINI_API_KEY / GOOGLE_API_KEY is not defined in the environment.");
   }
   return new GoogleGenAI({
     apiKey: apiKey || "MOCK_KEY",
@@ -4160,7 +4190,7 @@ app.post("/api/gemini/food-analyze", async (req, res) => {
     }
 
     // Check if key is mock
-    if (process.env.GEMINI_API_KEY === undefined) {
+    if (!getGeminiApiKey()) {
       // If the user's message is a modify request, let's execute modify command offline!
       const isModifyRequest = message.toLowerCase().includes("change") || message.toLowerCase().includes("modify") || message.toLowerCase().includes("update") || message.toLowerCase().includes("remove") || message.toLowerCase().includes("add") || message.toLowerCase().includes("gram");
       
@@ -13003,10 +13033,10 @@ app.post("/api/gemini/food-idea", async (req, res) => {
     const { message, userProfile, location, recentMeals, engine, budget, currency, maxDistance, clientNearbyPlaces, outOfRangeBiomarkers, biomarkersNeedingImprovement, customSystemInstruction, customVariableData } = req.body;
     addDebugLog(`[FoodIdea] Request parameters - engine: "${engine || 'default'}", maxDistance: ${maxDistance || 3}km, budget: "${budget} ${currency}". Query: "${message}"`);
 
-    if (process.env.GEMINI_API_KEY === undefined) {
-      addDebugLog(`[FoodIdea] Warning: GEMINI_API_KEY is not defined in Secrets.`);
+    if (!getGeminiApiKey()) {
+      addDebugLog(`[FoodIdea] Warning: GEMINI_API_KEY / GOOGLE_API_KEY is not defined in Secrets.`);
       return res.json({
-        text: "Please note: GEMINI_API_KEY is not configured in the Secrets manager.",
+        text: "Please note: GEMINI_API_KEY / GOOGLE_API_KEY is not configured in the Secrets manager.",
         ideas: [
           {
             id: 'mock-1',

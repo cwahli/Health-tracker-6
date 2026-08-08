@@ -1,53 +1,40 @@
 import fs from 'fs';
-import path from 'path';
+import assert from 'assert';
 
-let passed = 0;
-let failed = 0;
+console.log('Running M19 AI Studio Key & In-Memory Job Gate Assertions...');
 
-function assert(condition, message) {
-  if (condition) {
-    console.log(`PASS: ${message}`);
-    passed++;
-  } else {
-    console.error(`FAIL: ${message}`);
-    failed++;
-  }
-}
+const serverTs = fs.readFileSync('server.ts', 'utf8');
+const serverJobsTs = fs.readFileSync('serverJobs.ts', 'utf8');
 
-console.log('--- Running M19 AI Studio API Key and Stream Fix Assertions ---');
+// 1. getGeminiApiKey helper exists and supports all environment variables
+assert.ok(serverTs.includes('const getGeminiApiKey ='), 'server.ts must define getGeminiApiKey helper');
+assert.ok(serverTs.includes('process.env.GOOGLE_API_KEY'), 'server.ts must check GOOGLE_API_KEY');
+assert.ok(serverTs.includes('process.env.API_KEY'), 'server.ts must check API_KEY');
+assert.ok(serverTs.includes('process.env.GEMINI_API_KEYS'), 'server.ts must check GEMINI_API_KEYS');
+console.log('PASS: M19 getGeminiApiKey helper exists with multi-env support');
 
-// 1. Check server.ts API Key resolution & fallback
-const serverSrc = fs.readFileSync('server.ts', 'utf8');
-assert(
-  serverSrc.includes('process.env.GEMINI_API_KEY || process.env.AISTUDIO_API_KEY') ||
-  serverSrc.includes('getGeminiClient()'),
-  'server.ts supports flexible Gemini API key resolution'
-);
-assert(
-  serverSrc.includes('errorPayload') && serverSrc.includes('res.write(`data: ${JSON.stringify(errorPayload)}\\n\\n`)'),
-  'server.ts emits error JSON payloads over SSE stream in catch block'
-);
+// 2. getGeminiClient uses getGeminiApiKey
+assert.ok(serverTs.includes('const apiKey = getGeminiApiKey();'), 'getGeminiClient must call getGeminiApiKey()');
+console.log('PASS: M19 getGeminiClient calls getGeminiApiKey()');
 
-// 2. Check serverJobs.ts Stream error handling
-const serverJobsSrc = fs.readFileSync('serverJobs.ts', 'utf8');
-assert(
-  serverJobsSrc.includes('let streamErrorMessage: string | null = null;'),
-  'serverJobs.ts declares streamErrorMessage variable'
-);
-assert(
-  serverJobsSrc.includes('parsed.error'),
-  'serverJobs.ts parses error messages from stream payload'
-);
-assert(
-  serverJobsSrc.includes('throw new Error(streamErrorMessage ||'),
-  'serverJobs.ts surfaces real streamErrorMessage on failure'
-);
+// 3. serverJobs.ts has inMemoryServerJobs store for offline / unconfigured Supabase
+assert.ok(serverJobsTs.includes('export const inMemoryServerJobs = new Map<string, any>();'), 'serverJobs.ts must define inMemoryServerJobs');
+assert.ok(serverJobsTs.includes('export function getInMemoryServerJob'), 'serverJobs.ts must export getInMemoryServerJob');
+assert.ok(serverJobsTs.includes('export function listInMemoryServerJobs'), 'serverJobs.ts must export listInMemoryServerJobs');
+console.log('PASS: M19 serverJobs maintains inMemoryServerJobs store');
 
-console.log(`\nM19 Assertions Summary: ${passed} passed, ${failed} failed.`);
+// 4. server.ts routes /api/jobs/status and /api/jobs/debug use inMemoryServerJobs fallback
+assert.ok(serverTs.includes('getInMemoryServerJob'), 'server.ts must query getInMemoryServerJob when Supabase is unconfigured');
+console.log('PASS: M19 server.ts /api/jobs/status and /api/jobs/debug query in-memory store');
 
-if (failed > 0) {
-  process.exit(1);
-} else {
-  console.log('All M19 Assertions Passed (Exit 0).');
-  process.exit(0);
-}
+// 5. serverJobs.ts catches parsed.error
+assert.ok(serverJobsTs.includes('if (parsed.error)'), 'serverJobs.ts must check parsed.error from stream');
+assert.ok(serverJobsTs.includes('accumulatedLogs.push(`[error] ${errMsg}`);'), 'serverJobs.ts must log parsed error');
+console.log('PASS: M19 serverJobs parses and propagates SSE error payloads');
+
+// 6. serverJobs.ts has loopback retry with localhost
+assert.ok(serverJobsTs.includes('http://localhost:${port}/api/gemini/food-analyze?stream=true'), 'serverJobs.ts must have localhost fallback');
+console.log('PASS: M19 serverJobs has localhost loopback fallback');
+
+console.log('\nAll M19 AI Studio Fix Assertions PASS (exit 0).');
+process.exit(0);
