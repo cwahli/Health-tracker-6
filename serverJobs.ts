@@ -153,6 +153,7 @@ export async function submitServerJob(payload: ServerJobPayload): Promise<void> 
       const decoder = new TextDecoder();
       let buffer = '';
       finalData = null;
+      let streamErrorMessage: string | null = null;
 
       try {
         while (true) {
@@ -192,6 +193,10 @@ export async function submitServerJob(payload: ServerJobPayload): Promise<void> 
                 }
               } else if (parsed.final === true && parsed.result) {
                 finalData = parsed.result;
+              } else if (parsed.error) {
+                streamErrorMessage = typeof parsed.error === 'string'
+                  ? parsed.error
+                  : (parsed.error.message || 'Analysis engine returned an error.');
               }
             } catch (err) {
               // ignore JSON parse error on incomplete chunks
@@ -204,7 +209,7 @@ export async function submitServerJob(payload: ServerJobPayload): Promise<void> 
       }
 
       if (!finalData) {
-        throw new Error('Stream finished but no final result data was received');
+        throw new Error(streamErrorMessage || 'Stream finished but no final result data was received');
       }
 
       if (finalData.needsPortionClarify) {
