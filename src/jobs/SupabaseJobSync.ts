@@ -10,6 +10,7 @@ export async function hydrateUserJobs(userId: string = 'anonymous'): Promise<voi
     if (!rows || !Array.isArray(rows)) return;
 
     for (const row of rows) {
+      if (!row || !row.id || JobStore.isJobDeleted(row.id)) continue;
       const existing = JobStore.getJob(row.id);
       const cleanRes = row.clean_result || undefined;
       const photoUrl = row.photo_url || cleanRes?.photoUrl;
@@ -69,7 +70,7 @@ export function initSupabaseJobSync(userId?: string): () => void {
       },
       (payload) => {
         const row = payload.new as any;
-        if (!row || !row.id) return;
+        if (!row || !row.id || JobStore.isJobDeleted(row.id)) return;
 
         const existingJob = JobStore.getJob(row.id);
         const updatedFields: Partial<AgentJob> = {
@@ -145,5 +146,24 @@ export async function upsertJobToSupabase(
     }
   } catch (err) {
     console.warn('[SupabaseJobSync] Failed to upsert job to backend/Supabase:', err);
+  }
+}
+
+export async function deleteJobFromBackend(
+  jobId: string,
+  userId: string = 'anonymous'
+): Promise<void> {
+  if (!jobId) return;
+  try {
+    const res = await fetch('/api/jobs/delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jobId, userId }),
+    });
+    if (!res.ok) {
+      console.warn('[SupabaseJobSync] Failed to delete job from backend:', res.statusText);
+    }
+  } catch (err) {
+    console.warn('[SupabaseJobSync] Error deleting job from backend:', err);
   }
 }

@@ -15,6 +15,7 @@ function serializeJobs(jobs: AgentJob[]): string {
 
 class JobStoreImpl {
   private jobs: Map<string, AgentJob> = new Map();
+  private deletedJobIds: Set<string> = new Set();
   private listeners: Set<Listener> = new Set();
   private maxQueued = 5;
 
@@ -26,9 +27,25 @@ class JobStoreImpl {
     }, 1000);
   }
 
+  isJobDeleted(id: string): boolean {
+    return this.deletedJobIds.has(id);
+  }
+
   private loadJobs() {
     try {
       if (typeof localStorage === 'undefined') return;
+      const storedDeleted = localStorage.getItem('jobstore_deleted_ids');
+      if (storedDeleted) {
+        try {
+          const parsed = JSON.parse(storedDeleted) as string[];
+          if (Array.isArray(parsed)) {
+            this.deletedJobIds = new Set(parsed);
+          }
+        } catch (e) {
+          console.warn('Error loading deleted job IDs:', e);
+        }
+      }
+
       const stored = localStorage.getItem('jobstore_jobs');
       if (stored) {
         const parsed = JSON.parse(stored) as AgentJob[];
@@ -42,11 +59,23 @@ class JobStoreImpl {
               job.cancelReason = 'Analysis interrupted by browser reload';
             }
           }
-          this.jobs.set(job.id, job);
+          if (!this.deletedJobIds.has(job.id)) {
+            this.jobs.set(job.id, job);
+          }
         }
       }
     } catch (e) {
       console.warn('Error loading jobs from localStorage:', e);
+    }
+  }
+
+  private saveDeletedJobIds() {
+    try {
+      if (typeof localStorage === 'undefined') return;
+      const arr = Array.from(this.deletedJobIds).slice(-500);
+      localStorage.setItem('jobstore_deleted_ids', JSON.stringify(arr));
+    } catch {
+      // Silently catch quota errors
     }
   }
 
@@ -152,6 +181,10 @@ class JobStoreImpl {
   }
 
   createJob(params: Partial<AgentJob> & { id: string }): AgentJob {
+    if (params.id && this.deletedJobIds.has(params.id)) {
+      this.deletedJobIds.delete(params.id);
+      this.saveDeletedJobIds();
+    }
     const job: AgentJob = {
       kind: 'food_log',
       status: 'draft',
@@ -189,6 +222,10 @@ class JobStoreImpl {
   }
 
   async deleteJob(id: string) {
+    if (id) {
+      this.deletedJobIds.add(id);
+      this.saveDeletedJobIds();
+    }
     if (this.jobs.has(id)) {
       this.jobs.delete(id);
       this.saveJobs();
@@ -196,6 +233,10 @@ class JobStoreImpl {
     }
     // Draft cleanup auto-purges associated ImageStore entries
     await ImageStore.purgeImages(id);
+    // Asynchronously delete job from backend / Supabase
+    import('./SupabaseJobSync')
+      .then((m) => m.deleteJobFromBackend(id))
+      .catch((err) => console.warn('Failed to dispatch backend job deletion:', err));
   }
 
   getJob(id: string): AgentJob | undefined {

@@ -1640,6 +1640,31 @@ app.post('/api/jobs/upsert', async (req, res) => {
   }
 });
 
+app.post('/api/jobs/delete', async (req, res) => {
+  try {
+    const { jobId } = req.body;
+    if (!jobId) {
+      return res.status(400).json({ error: 'jobId is required' });
+    }
+    const { deleteInMemoryServerJob } = await import('./serverJobs');
+    deleteInMemoryServerJob(String(jobId));
+
+    const { isSupabaseConfigured } = await import('./src/utils/supabaseClient');
+    if (isSupabaseConfigured) {
+      const { supabaseAdmin } = await import('./supabaseAdmin');
+      const { error } = await supabaseAdmin.from('agent_jobs').delete().eq('id', String(jobId));
+      if (error) {
+        console.error('Failed to delete job from Supabase:', error);
+        return res.status(500).json({ error: error.message });
+      }
+    }
+    res.json({ success: true });
+  } catch (err: any) {
+    console.error('Failed to delete job:', err);
+    res.status(500).json({ error: err.message || 'Internal server error' });
+  }
+});
+
 app.post('/api/jobs/submit', async (req, res) => {
   try {
     const { jobId, userId, kind, mode, text, images, imageUrls, history, userProfile, engine, biomarkersNeedingImprovement, remainingAllowance, activeMeal, foodLogs, userSelectedMode, activeScoutItems } = req.body;

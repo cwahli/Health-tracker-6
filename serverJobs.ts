@@ -36,6 +36,10 @@ export function listInMemoryServerJobs(userId?: string) {
   return jobs;
 }
 
+export function deleteInMemoryServerJob(jobId: string) {
+  inMemoryServerJobs.delete(jobId);
+}
+
 export async function submitServerJob(payload: ServerJobPayload): Promise<void> {
   const { jobId, userId = 'anonymous', kind, mode, text, images = [], imageUrls = [] } = payload;
   const dbKind = kind || 'food_log';
