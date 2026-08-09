@@ -157,26 +157,20 @@ export async function submitServerJob(payload: ServerJobPayload): Promise<void> 
           signal: controller.signal
         });
       } catch (fetchErr: any) {
-        if (baseUrl.includes('127.0.0.1') && !process.env.INTERNAL_BASE_URL) {
-          try {
-            response = await fetch(`http://localhost:${port}/api/gemini/food-analyze?stream=true`, {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-                'X-Session-ID': 'server-job-' + jobId
-              },
-              body: JSON.stringify(bodyData),
-              signal: controller.signal
-            });
-          } catch (retryErr: any) {
-            if (chunkTimer) clearTimeout(chunkTimer);
-            clearTimeout(globalTimeout);
-            throw retryErr;
-          }
-        } else {
+        try {
+          response = await fetch(`http://localhost:${port}/api/gemini/food-analyze?stream=true`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-Session-ID': 'server-job-' + jobId
+            },
+            body: JSON.stringify(bodyData),
+            signal: controller.signal
+          });
+        } catch (retryErr: any) {
           if (chunkTimer) clearTimeout(chunkTimer);
           clearTimeout(globalTimeout);
-          throw fetchErr;
+          throw retryErr;
         }
       }
 
