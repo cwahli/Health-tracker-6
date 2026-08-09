@@ -25,6 +25,9 @@ export function fromPendingFoodLog(log: any, meta?: Partial<MealBuild>): MealBui
       message: log.message || '',
     },
     imageUrls: log.imageUrls || [],
+    receiptTable: log.receiptTable,
+    weightGrams: log.weightGrams,
+    quantity: log.quantity,
     ...meta
   };
   
@@ -45,6 +48,8 @@ export function toPendingFoodLog(meal: MealBuild): any {
     message: meal.content?.message || '',
     imageUrls: meal.imageUrls || [],
     photoUrl: meal.photoUrl,
+    weightGrams: meal.weightGrams,
+    quantity: meal.quantity,
     debugUrl: meal.coldDebugUrl,
     scoutConfidence: meal.scoutConfidence,
     scoutContentType: meal.scoutContentType,
