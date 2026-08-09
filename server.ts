@@ -5947,6 +5947,13 @@ function parseServingSizeGrams(ssVal: string, totalItemWeight: number): number {
           'sub', 'roll', 'bar', 'shake', 'platter', 'box', 'meal'
         ]);
 
+        // Chain/brand name tokens (e.g. "yolk") are near-universal across every dish on that
+        // chain's menu and must not count as distinguishing evidence of identity — otherwise
+        // two unrelated dishes from the same brand that both happen to be a "bowl" satisfy the
+        // shared>=2 threshold below purely on brand name + generic form word (B-DISHID-01).
+        const chainTokens = new Set(tokenize(String(detectedChainKey || '').replace(/_/g, ' ')));
+        const isNoiseToken = (t: string) => DISH_FORM_WORDS.has(t) || chainTokens.has(t);
+
         const checkTokenMatch = (targetTokens: string[]) => {
           if (targetTokens.length === 0 || mTokens.length === 0) return false;
 
@@ -5963,13 +5970,19 @@ function parseServingSizeGrams(ssVal: string, totalItemWeight: number): number {
           }
 
           let shared = 0;
+          let distinguishingShared = 0;
           targetTokens.forEach(t => {
             if (mTokens.some(mt => mt.startsWith(t) || t.startsWith(mt))) {
               shared++;
+              if (!isNoiseToken(t)) distinguishingShared++;
             }
           });
+          // Require at least 2 shared DISTINGUISHING tokens for brand_official candidates —
+          // brand name + dish-form word alone (e.g. "yolk" + "bowl") is not evidence two dishes
+          // are the same item.
           if (m.source === 'brand_official' || m.brandPriority) {
-            return shared >= 2 || (targetTokens.length > 0 && shared / targetTokens.length >= 0.5);
+            return distinguishingShared >= 2 ||
+              (targetTokens.length > 0 && shared / targetTokens.length >= 0.5 && distinguishingShared >= 1);
           }
           return shared >= 2 && shared / targetTokens.length >= 0.5;
         };
