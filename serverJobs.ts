@@ -54,13 +54,20 @@ export async function submitServerJob(payload: ServerJobPayload): Promise<void> 
   };
   inMemoryServerJobs.set(jobId, initialJobRecord);
 
-  // 1. Initial status write to Supabase
+  // 1. Initial status write to Supabase (fire-and-forget: must never block the
+  // /api/jobs/submit response, or a slow/unreachable Supabase call turns into
+  // a platform-level 502 on the outer request instead of a clean in-app error)
   if (isSupabaseConfigured) {
-    const { error } = await supabaseAdmin.from('agent_jobs').upsert(initialJobRecord, { onConflict: 'id' });
-
-    if (error) {
-      console.error('[ServerJobs] initial upsert failed:', error);
-    }
+    (async () => {
+      try {
+        const { error } = await supabaseAdmin.from('agent_jobs').upsert(initialJobRecord, { onConflict: 'id' });
+        if (error) {
+          console.error('[ServerJobs] initial upsert failed:', error);
+        }
+      } catch (e: any) {
+        console.error('[ServerJobs] initial upsert threw:', e);
+      }
+    })();
   }
 
   // 2. Asynchronous cloud execution (fire & forget on server process)
