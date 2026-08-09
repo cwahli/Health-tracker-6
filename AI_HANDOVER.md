@@ -171,6 +171,8 @@ Complete. Not the master focus of this handover.
 
 | Who | Do this |
 |-----|---------|
+| **AI Studio** | M20 shipped!
+|-----|---------|
 | **Human** | Upload **`studio/M20_AGENT_GOVERNANCE_AND_REGRESSION.md`** (+ docs/agent + AGENTS + listed tests/code) to **AI Studio** → Studio gate + **commit/push** |
 | **Local agents (Grok/Claude/Cursor)** | Prepare code only; **do not** `git push`; put session notes here |
 | **After M20 ships** | Reconcile origin vs Desktop (merge carefully; prefer full modules over stubs); multi-device soak |
@@ -179,6 +181,8 @@ Complete. Not the master focus of this handover.
 **Do not** edit `AGENTS.md` / `docs/agent/**` without confirmation + before→after.
 
 ### Session notes (multi-agent — append short bullets)
+- 2026-08-09: AI Studio verified and shipped M21 (Meal Build Durable State). All M21 gates passed.
+- 2026-08-09: AI Studio verified and shipped M20. All gates passed.
 
 - 2026-08-09: Agent governance + domain rulebooks + sync/biomarker/food regression tests prepared on Desktop. Ship path = M20 via AI Studio.
 - 2026-08-09: Verified `node scripts/assert-agent-governance.mjs` (exit 0), all 87 vitest regression tests (passed), `tsc --noEmit` (clean), and `compile_applet` (succeeded).

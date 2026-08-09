@@ -32,6 +32,7 @@ class JobQueueRunnerImpl {
         })
       );
       const cleanImages = stringImages.filter(Boolean);
+      const isDietitianResume = job.resumeStage === 'dietitian';
       const executorInput = {
         jobId: job.id,
         text: job.inputSnapshot?.text || '',
@@ -45,7 +46,7 @@ class JobQueueRunnerImpl {
         signal,
         activeScoutItems: job.checkpoint?.scoutItems,
         scoutContentType: job.checkpoint?.scoutContentType,
-        skipScout: !!job.checkpoint?.scoutItems,
+        skipScout: !!job.checkpoint?.scoutItems || isDietitianResume,
         messages: job.messages || [],
       };
 
@@ -57,11 +58,16 @@ class JobQueueRunnerImpl {
             statusMessage: event.statusMessage || job.statusMessage,
           });
         } else if (event.type === 'checkpoint') {
-          JobStore.updateJob(job.id, {
-            checkpoint: event.checkpoint,
-            stepKey: 'scout',
-            progressPercent: 35,
-            statusMessage: 'Scout checkpoint saved',
+          import('../mealBuild/consolidate').then(({ consolidateMeal }) => {
+             const m = job.mealBuild || { id: job.id, schemaVersion: 1, version: 1, items: [], status: 'draft', createdAt: new Date().toISOString() } as any;
+             const updated = consolidateMeal(m, { items: event.checkpoint?.scoutItems || [] }, 'scout');
+             JobStore.updateJob(job.id, {
+               checkpoint: event.checkpoint,
+               mealBuild: updated,
+               stepKey: 'scout',
+               progressPercent: 35,
+               statusMessage: 'Scout checkpoint saved',
+             });
           });
         } else if (event.type === 'partial') {
           JobStore.updateJob(job.id, {

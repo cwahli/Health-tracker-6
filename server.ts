@@ -19,6 +19,8 @@ import {
   buildPortionClarifyPayload,
   applyPortionChoices,
 } from './server_portion_clarify.js';
+import { markDietitianDegraded, buildSavableMealFromParsed } from './server_meal_orchestrator.js';
+import { toPendingFoodLog } from './src/mealBuild/adapters.js';
 import {
   detectWeightRefineIntent,
   shouldSkipScoutForWeightRefine,
@@ -4006,6 +4008,10 @@ app.post("/api/gemini/food-analyze", async (req, res) => {
   }, async () => {
   let visionScoutItems: any[] = [];
   let visionScoutContentType: string | null = null;
+  let preCalculatedItems: any[] | undefined;
+  let aggregatedNutrients: any;
+  let fullPromptSent: string = "";
+  let apiCalls: any[] = [];
   try {
     const { message, image, images, imageDates, history, userProfile, engine, biomarkersNeedingImprovement, remainingAllowance, userId, activeMeal, customSystemInstruction, customVariableData, foodLogs, userSelectedMode } = req.body;
     const activeComparison = req.body.activeComparison;
@@ -5225,7 +5231,7 @@ app.post("/api/gemini/food-analyze", async (req, res) => {
     }
 
     // Backend-Side Mathematical Macro Aggregation for Component-Level Decomposition
-    const preCalculatedItems = visionScoutItems.map((item: any, itemIdx: number) => {
+    preCalculatedItems = visionScoutItems.map((item: any, itemIdx: number) => {
       const itemWeight = item.estimatedWeightGrams || 100;
       const aggregatedNutrients: Record<string, number> = {};
       NUTRIENT_KEYS.forEach(k => aggregatedNutrients[k] = 0);
@@ -7596,7 +7602,7 @@ ${visionScoutCtx}
 ${databaseMatchesCtx}
 Current User Input: "${message}"`) + modeDPromptSuffix;
 
-    const fullPromptSent = `System Instruction:\n${finalSystemInstruction}\n\n${promptText}`;
+    fullPromptSent = `System Instruction:\n${finalSystemInstruction}\n\n${promptText}`;
     addDebugLog(`[RouteAgent Chat] Sending request to Gemini...`);
     async function callAndParseFoodAnalysis(callArgs: any): Promise<{ textOutput: string; rawParsed: any }> {
       if (isStream) {
@@ -7822,7 +7828,7 @@ Current User Input: "${message}"`) + modeDPromptSuffix;
     }
     const originalModeIsModify = (mode === "modify" || isExplicitModify || (req.body.activeMeal !== undefined && (message.toLowerCase().includes("change") || message.toLowerCase().includes("modify") || message.toLowerCase().includes("update") || message.toLowerCase().includes("remove") || message.toLowerCase().includes("add") || message.toLowerCase().includes("correct") || message.toLowerCase().includes("only") || message.toLowerCase().includes("instead") || message.toLowerCase().includes("replace"))));
 
-    const apiCalls = [
+    apiCalls = [
       ...(hasImage ? [{ type: 'gemini', label: 'Food nutrition agent - Visual Scout (gemini-3.5-flash-lite)' }] : []),
       ...(queriesToSearch && queriesToSearch.length > 0 ? [{ type: 'usda', label: `Food nutrition agent - USDA (${queriesToSearch.length})` }] : []),
       { type: 'gemini', label: `Food nutrition agent - Dietitian (${(typeof engine === 'object' ? engine?.name || engine?.model : engine) || 'gemini-3.5-flash-lite'})` }
@@ -9653,6 +9659,32 @@ Current User Input: "${message}"`) + modeDPromptSuffix;
     }
   } catch (error: any) {
     console.error("[Food Analyze Error]:", error);
+    
+    // Dietitian Degrade logic (Phase 1)
+    if (preCalculatedItems && preCalculatedItems.length > 0 && preCalculatedItems.some((p: any) => p.estimatedCalories !== undefined || (p.primaryBase100g && p.primaryBase100g.calories !== undefined))) {
+      addDebugLog(`[Dietitian Degrade] Dietitian failed permanently, but pre-calculated math exists. Salvaging meal build.`);
+      
+      const salvagedMeal = buildSavableMealFromParsed(preCalculatedItems, req.body.activeMeal, aggregatedNutrients, null);
+      const degradedMeal = markDietitianDegraded(salvagedMeal, error.message);
+      const payloadData = toPendingFoodLog(degradedMeal);
+      
+      const successPayload = {
+        data: payloadData,
+        mealBuild: degradedMeal,
+        degradedStages: degradedMeal.degradedStages,
+        message: "Nutrients logged based on core databases, but AI clinical advice is currently unavailable.",
+        agentPrompt: fullPromptSent,
+        apiCalls
+      };
+
+      if (isStream && hasSentHeaders) {
+        res.write(`data: ${JSON.stringify({ final: true, result: successPayload })}\n\n`);
+        return res.end();
+      } else {
+        return res.status(200).json(successPayload);
+      }
+    }
+
     const errorPayload: any = {
       error: `Failed to process your request (Error: ${error.message || 'Connection timed out'}). Please try again with a different model from the top-left dropdown.`,
       agentNotAvailable: true
@@ -13200,10 +13232,15 @@ const searchRegistry: SearchEngine[] = [
         const url = `https://en.wikipedia.org/w/api.php?action=query&format=json&prop=pageimages&pithumbsize=600&generator=search&gsrsearch=${encodeURIComponent(query)}&gsrlimit=${count + 2}&origin=*`;
         const res = await fetch(url, {
           headers: {
-            "User-Agent": "HealthTracker/3.0 (https://github.com/cwahli/Health-tracker-3; contact@example.com)"
+            "User-Agent": "HealthTracker/6.0 (https://github.com/cwahli/Health-tracker-6; Cwah.Liu@gmail.com)"
           }
         });
-        const data = await res.json();
+        const text = await res.text();
+        if (!text.trim().startsWith('{')) {
+          console.warn("[Wiki Search Warning] Non-JSON response received:", text.slice(0, 200));
+          return [];
+        }
+        const data = JSON.parse(text);
         if (data.query && data.query.pages) {
           const pages = data.query.pages;
           const results = [];

@@ -197,6 +197,9 @@ export default function TaskPlaceholderCard({
   }, [job.id, job.photoUrl, job.result, job.messages]);
 
   const getStatusLabel = () => {
+    if (job.status === 'succeeded' && Array.isArray(job.result?.degradedStages) && job.result.degradedStages.includes('dietitian')) {
+      return 'AI advice pending';
+    }
     switch (job.status) {
       case 'queued': {
         const queue = JobStore.getAllJobs().filter(j => j.status === 'queued' || j.status === 'running');
@@ -222,6 +225,9 @@ export default function TaskPlaceholderCard({
   };
 
   const getStatusColorClass = () => {
+    if (job.status === 'succeeded' && Array.isArray(job.result?.degradedStages) && job.result.degradedStages.includes('dietitian')) {
+      return 'text-amber-600 bg-amber-50 dark:bg-amber-950/40 border border-amber-300 dark:border-amber-700';
+    }
     switch (job.status) {
       case 'queued':
         return 'text-slate-500 bg-slate-100 dark:bg-slate-900/60';
@@ -391,7 +397,7 @@ export default function TaskPlaceholderCard({
             )}
 
             {/* Save Log Button for Succeeded Jobs */}
-            {job.status === 'succeeded' && pendingFoodLog && (
+            {((job.status === 'succeeded' || job.result?.savable || job.result?.mealBuild?.savable || job.mealBuild?.savable) && !!pendingFoodLog) && (
               <button
                 type="button"
                 onClick={handleLocalSave}
@@ -408,21 +414,27 @@ export default function TaskPlaceholderCard({
             )}
 
             {/* Retry Button for Failed or Cancelled Jobs */}
-            {(job.status === 'failed' || job.status === 'cancelled' || job.status === 'cancel_requested') && (
+            {((job.status === 'failed' || job.status === 'cancelled' || job.status === 'cancel_requested') || (Array.isArray(job.result?.degradedStages) && job.result.degradedStages.includes('dietitian'))) && (
               <button
                 type="button"
                 onClick={() => {
+                  const isDegraded = Array.isArray(job.result?.degradedStages) && job.result.degradedStages.includes('dietitian');
                   JobStore.updateJob(job.id, {
                     status: 'queued',
                     retryNotBefore: undefined,
                     error: undefined,
-                    statusMessage: 'Retrying analysis...'
+                    statusMessage: isDegraded ? 'Retrying AI advice...' : 'Retrying analysis...',
+                    resumeStage: isDegraded ? 'dietitian' : undefined
                   });
                 }}
-                className="px-3 py-1.5 text-xs font-bold text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-950/20 rounded-xl transition-all flex items-center gap-1 cursor-pointer"
+                className={`px-3 py-1.5 text-xs font-bold rounded-xl transition-all flex items-center gap-1 cursor-pointer ${
+                  (Array.isArray(job.result?.degradedStages) && job.result.degradedStages.includes('dietitian'))
+                    ? 'text-amber-600 hover:bg-amber-50 dark:hover:bg-amber-950/20'
+                    : 'text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-950/20'
+                }`}
               >
                 <RotateCcw className="w-3.5 h-3.5" />
-                Retry
+                {(Array.isArray(job.result?.degradedStages) && job.result.degradedStages.includes('dietitian')) ? 'Retry Advice' : 'Retry'}
               </button>
             )}
 

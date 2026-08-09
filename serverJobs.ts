@@ -336,6 +336,8 @@ export async function submitServerJob(payload: ServerJobPayload): Promise<void> 
           photoUrl: photoUrl || undefined,
           debugUrl: undefined as string | undefined,
           backendLogs: accumulatedLogs.join('\n').slice(0, 200000),
+          mealBuild: finalPayload?.mealBuild,
+          degradedStages: finalPayload?.degradedStages,
         };
 
         try {

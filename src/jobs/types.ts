@@ -1,3 +1,5 @@
+import { MealBuild } from '../mealBuild/types';
+
 export type JobStatus = 'draft' | 'queued' | 'running' | 'succeeded' | 'failed' | 'cancel_requested' | 'cancelled' | 'awaiting_user' | 'processing';
 export type ErrorClass = 'permanent' | 'transient' | 'retriable_from_checkpoint';
 export type JobKind = 'food_log' | 'food_compare' | 'front_desk' | 'medical' | string;
@@ -21,6 +23,8 @@ export interface AgentJob {
     modelId?: string;
   };
   checkpoint?: any;
+  mealBuild?: MealBuild;
+  resumeStage?: string;
   liveThoughts?: {
     scout?: string;
     dietitian?: string;

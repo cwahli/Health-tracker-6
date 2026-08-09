@@ -136,8 +136,11 @@ export async function* executeFoodAgent(input: FoodAgentExecutorInput): AsyncGen
   if (remainingAllowance) {
     bodyData.remainingAllowance = remainingAllowance;
   }
-  if (input.checkpoint?.scoutItems) {
-    bodyData.activeScoutItems = input.checkpoint.scoutItems;
+  if (input.skipScout) {
+    bodyData.skipScout = input.skipScout;
+  }
+  if (input.activeScoutItems || input.checkpoint?.scoutItems) {
+    bodyData.activeScoutItems = input.activeScoutItems || input.checkpoint?.scoutItems;
   }
 
   // Cleanup undefined

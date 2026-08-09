@@ -12,7 +12,9 @@ Do **not** assume 100% parity without `git fetch` + audit. Desktop may be **ahea
 
 | Pack | Role |
 |------|------|
-| **[M20_AGENT_GOVERNANCE_AND_REGRESSION.md](./M20_AGENT_GOVERNANCE_AND_REGRESSION.md)** | Commit agent governance + domain regression foundation (**AI Studio commit/push only**) |
+| None | Waiting for next pack |
+| None | Waiting for next pack |
+| None | Waiting for next pack |
 
 ## Governance gates (run before claiming M20 DONE)
 

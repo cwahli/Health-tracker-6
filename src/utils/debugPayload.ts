@@ -77,6 +77,12 @@ export type DebugReportInput = {
   photoUrl?: string;
   exportedAt?: string;
   mode?: string;
+  savable?: boolean;
+  degradedStages?: string[];
+  lastUserAction?: any;
+  stageLedger?: any[];
+  historyLog?: any[];
+  version?: number;
 };
 
 /**
@@ -92,6 +98,10 @@ export function buildDebugMarkdownReport(input: DebugReportInput): string {
   if (input.jobId) lines.push(`- **Job ID:** \`${input.jobId}\``);
   if (input.status) lines.push(`- **Status:** ${input.status}`);
   if (input.mode) lines.push(`- **Mode:** ${input.mode}`);
+  if (input.version !== undefined) lines.push(`- **Version:** ${input.version}`);
+  if (input.savable !== undefined) lines.push(`- **Savable:** ${input.savable}`);
+  if (input.degradedStages && input.degradedStages.length > 0) lines.push(`- **Degraded Stages:** ${input.degradedStages.join(', ')}`);
+  if (input.lastUserAction) lines.push(`- **Last User Action:** ${JSON.stringify(input.lastUserAction)}`);
   if (input.debugUrl) lines.push(`- **Cold debug URL:** ${input.debugUrl}`);
   if (input.photoUrl && /^https?:\/\//i.test(String(input.photoUrl))) {
     lines.push(`- **Photo:** ${input.photoUrl}`);
@@ -159,6 +169,29 @@ export function buildDebugMarkdownReport(input: DebugReportInput): string {
         lines.push(`| ${item} | ${src} | ${notes} |`);
       }
     }
+    
+    if (Array.isArray(input.stageLedger) && input.stageLedger.length > 0) {
+      lines.push('');
+      lines.push(`### Stage Ledger`);
+      lines.push('');
+      lines.push(`| Stage | Status | Attempt | Key Decisions | Errors |`);
+      lines.push(`|-------|--------|---------|---------------|--------|`);
+      for (const record of input.stageLedger) {
+        const decisions = (record.decisions || []).map((d: any) => d.key).join(', ');
+        const errors = (record.errors || []).map((e: any) => e.message).join(', ');
+        lines.push(`| ${record.stage || '—'} | ${record.status || '—'} | ${record.attempt || '—'} | ${decisions || '—'} | ${errors || '—'} |`);
+      }
+    }
+
+    if (Array.isArray(input.historyLog) && input.historyLog.length > 0) {
+      lines.push('');
+      lines.push(`### History Log`);
+      lines.push('');
+      for (const entry of input.historyLog.slice(-100)) {
+        lines.push(`- **${entry.at}** [${entry.kind}]: ${entry.message} ${entry.detail ? `(${entry.detail})` : ''}`);
+      }
+    }
+
     lines.push('');
   }
 
