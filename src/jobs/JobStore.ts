@@ -182,8 +182,8 @@ class JobStoreImpl {
 
   createJob(params: Partial<AgentJob> & { id: string }): AgentJob {
     if (params.id && this.deletedJobIds.has(params.id)) {
-      this.deletedJobIds.delete(params.id);
-      this.saveDeletedJobIds();
+      // Do not recreate or resurrect a deleted job
+      return { id: params.id, status: 'cancelled', ...params } as AgentJob;
     }
     const job: AgentJob = {
       kind: 'food_log',
@@ -206,6 +206,14 @@ class JobStoreImpl {
   }
 
   updateJob(id: string, patch: Partial<AgentJob>) {
+    if (this.deletedJobIds.has(id)) {
+      if (this.jobs.has(id)) {
+        this.jobs.delete(id);
+        this.saveJobs();
+        this.notify();
+      }
+      return;
+    }
     const job = this.jobs.get(id);
     if (!job) return;
 
@@ -230,6 +238,8 @@ class JobStoreImpl {
       this.jobs.delete(id);
       this.saveJobs();
       this.notify();
+    } else {
+      this.notify();
     }
     // Draft cleanup auto-purges associated ImageStore entries
     await ImageStore.purgeImages(id);
@@ -240,13 +250,14 @@ class JobStoreImpl {
   }
 
   getJob(id: string): AgentJob | undefined {
+    if (this.deletedJobIds.has(id)) return undefined;
     return this.jobs.get(id);
   }
 
   getAllJobs(): AgentJob[] {
-    return Array.from(this.jobs.values()).sort(
-      (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
-    );
+    return Array.from(this.jobs.values())
+      .filter((j) => !this.deletedJobIds.has(j.id))
+      .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
   }
 
   getQueue(): AgentJob[] {

@@ -10,7 +10,12 @@ export async function hydrateUserJobs(userId: string = 'anonymous'): Promise<voi
     if (!rows || !Array.isArray(rows)) return;
 
     for (const row of rows) {
-      if (!row || !row.id || JobStore.isJobDeleted(row.id)) continue;
+      if (!row || !row.id || JobStore.isJobDeleted(row.id)) {
+        if (row && row.id && JobStore.isJobDeleted(row.id)) {
+          deleteJobFromBackend(row.id, userId);
+        }
+        continue;
+      }
       const existing = JobStore.getJob(row.id);
       const cleanRes = row.clean_result || undefined;
       const photoUrl = row.photo_url || cleanRes?.photoUrl;
@@ -69,8 +74,20 @@ export function initSupabaseJobSync(userId?: string): () => void {
         filter: userId ? `user_id=eq.${userId}` : undefined,
       },
       (payload) => {
+        if (payload.eventType === 'DELETE') {
+          const oldRow = payload.old as any;
+          if (oldRow && oldRow.id) {
+            JobStore.deleteJob(oldRow.id);
+          }
+          return;
+        }
         const row = payload.new as any;
-        if (!row || !row.id || JobStore.isJobDeleted(row.id)) return;
+        if (!row || !row.id || JobStore.isJobDeleted(row.id)) {
+          if (row && row.id && JobStore.isJobDeleted(row.id)) {
+            deleteJobFromBackend(row.id, userId || 'anonymous');
+          }
+          return;
+        }
 
         const existingJob = JobStore.getJob(row.id);
         const updatedFields: Partial<AgentJob> = {

@@ -13,7 +13,7 @@ import ConflictResolutionModal from './components/ConflictResolutionModal';
 import LogChat from './components/LogChat';
 import { JobStore } from './jobs/JobStore';
 import { JobQueueRunner } from './jobs/JobQueueRunner';
-import { initSupabaseJobSync } from './jobs/SupabaseJobSync';
+import { initSupabaseJobSync, hydrateUserJobs } from './jobs/SupabaseJobSync';
 import { ImageStore } from './jobs/ImageStore';
 import { executeFoodAgent } from './jobs/FoodAgentExecutor';
 import { executeMedicalAgent } from './jobs/MedicalAgentExecutor';
@@ -2192,6 +2192,8 @@ export default function App() {
               localBioHistory = sb;
             });
           }
+          // Trigger job hydration to ensure server jobs and deleted placeholders stay in sync
+          hydrateUserJobs(uid).catch(() => {});
           tFoodsId = logInteraction('download', `users/${uid}/foodLogs`, null);
           tBioId = logInteraction('download', `users/${uid}/biomarkerHistory`, null);
           tActsId = logInteraction('download', `users/${uid}/actions`, null);
