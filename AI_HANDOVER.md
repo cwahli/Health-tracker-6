@@ -181,6 +181,14 @@ Complete. Not the master focus of this handover.
 **Do not** edit `AGENTS.md` / `docs/agent/**` without confirmation + before→after.
 
 ### Session notes (multi-agent — append short bullets)
+- 2026-08-09: Implemented Formalized Pure Projectors (`plan §3A`) and Bi-directional Agent Reflection Loop:
+  - Created `src/mealBuild/projectors.ts` with standalone stage input masks (`projectScoutInput`, `projectResolverInput`, `projectCalculatorInput`, `projectDietitianInput`) preventing context bloat and raw payload dilution.
+  - Created `src/mealBuild/reflection.ts` providing `evaluateResolverConfidence` and `buildVisionCropReQuery` to trigger targeted crop re-queries for low-confidence (<60%) candidate matches before category fallback.
+  - Created unit tests `src/mealBuild/__tests__/projectors.test.ts` and `src/mealBuild/__tests__/reflection.test.ts`.
+- 2026-08-09: Implemented Initiative J (True Server Background Workers & Crash Recovery):
+  - Added `recoverInterruptedServerJobs()` in `serverJobs.ts` to scan and resume interrupted in-memory and Supabase running jobs following server restart/crashes.
+  - Integrated worker recovery invocation into `server.ts` boot sequence.
+  - Added unit test suite `src/jobs/__tests__/ServerJobRecovery.test.ts` validating crash detection and job resumption.
 - 2026-08-09: Completed Phase 3, 5, 6 Roadmap items from `plan/MEAL_BUILD_DURABLE_STATE.md`:
   - Integrated `migrateMealSchema` into `storageUtils.ts` for clean client-side local storage pull schema migration.
   - Enhanced `FoodEvaluationComparisonCard.tsx` and `TaskPlaceholderCard.tsx` to project Mode D `ComparisonSet` option meals with side-by-side macro grids and recommendations.

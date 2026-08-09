@@ -34,7 +34,7 @@ import * as cheerio from "cheerio";
 import fs from "fs";
 import path from "path";
 import { getApps, initializeApp } from 'firebase-admin/app';
-import { submitServerJob } from './serverJobs';
+import { submitServerJob, recoverInterruptedServerJobs } from './serverJobs';
 
 export const BEVERAGE_RAW_PATTERN = /\b(beverage|drink|water|juice|beer|wine|soda|cola|tea|coffee|cappuccino|espresso|latte|mocha|macchiato|boba|smoothie|shake|milk|oat\s*milk|oatmilk|almond\s*milk|almondmilk|soy\s*milk|soymilk|coconut\s*milk|dairy|yogurt|fruit|melon|watermelon|apple|orange|banana|berry|berries|grape|citrus|salad|raw|fresh|broth|soup)\b/i;
 
@@ -14330,6 +14330,14 @@ async function compressImagesInObject(obj: any, report: any): Promise<boolean> {
     }
   }).catch((err) => {
     console.warn('[BrandCache] Warmup warning:', err);
+  });
+
+  recoverInterruptedServerJobs().then(count => {
+    if (count > 0) {
+      console.log(`[ServerJobs Worker] Interrupted background job recovery initiated for ${count} jobs.`);
+    }
+  }).catch(err => {
+    console.warn('[ServerJobs Worker] Startup recovery warning:', err);
   });
 
   app.listen(PORT, "0.0.0.0", () => {

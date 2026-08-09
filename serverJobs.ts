@@ -40,6 +40,71 @@ export function deleteInMemoryServerJob(jobId: string) {
   inMemoryServerJobs.delete(jobId);
 }
 
+export async function recoverInterruptedServerJobs(): Promise<number> {
+  console.log('[ServerJobs Worker] Checking for interrupted server jobs to recover...');
+  let recoveredCount = 0;
+
+  try {
+    // 1. Check in-memory running jobs
+    for (const [id, job] of inMemoryServerJobs.entries()) {
+      if (job.status === 'running' || job.status === 'pending') {
+        console.log(`[ServerJobs Worker] Recovering in-memory job ${id}...`);
+        job.status_message = 'Resuming analysis after process restart...';
+        job.updated_at = new Date().toISOString();
+        recoveredCount++;
+        // Re-trigger execution
+        submitServerJob({
+          jobId: id,
+          userId: job.user_id,
+          kind: job.kind,
+          mode: job.mode,
+          text: job.inputSnapshot?.message,
+          imageUrls: job.photo_url ? [job.photo_url] : [],
+        }).catch(e => console.error(`[ServerJobs Worker] Error resuming job ${id}:`, e));
+      }
+    }
+
+    // 2. Check Supabase running jobs if configured
+    if (isSupabaseConfigured) {
+      const { data: stuckJobs, error } = await supabaseAdmin
+        .from('agent_jobs')
+        .select('*')
+        .in('status', ['running', 'pending']);
+
+      if (error) {
+        console.error('[ServerJobs Worker] Failed to query stuck jobs from Supabase:', error);
+      } else if (stuckJobs && stuckJobs.length > 0) {
+        for (const dbJob of stuckJobs) {
+          if (!inMemoryServerJobs.has(dbJob.id)) {
+            console.log(`[ServerJobs Worker] Recovering Supabase job ${dbJob.id}...`);
+            inMemoryServerJobs.set(dbJob.id, {
+              ...dbJob,
+              status: 'running',
+              status_message: 'Resuming analysis after process restart...',
+              updated_at: new Date().toISOString()
+            });
+            recoveredCount++;
+
+            submitServerJob({
+              jobId: dbJob.id,
+              userId: dbJob.user_id,
+              kind: dbJob.kind,
+              mode: dbJob.mode,
+              text: dbJob.input_snapshot?.message || dbJob.clean_result?.text || '',
+              imageUrls: dbJob.photo_url ? [dbJob.photo_url] : [],
+              activeMeal: dbJob.clean_result?.mealBuild || dbJob.clean_result?.pendingFoodLog
+            }).catch(e => console.error(`[ServerJobs Worker] Error resuming Supabase job ${dbJob.id}:`, e));
+          }
+        }
+      }
+    }
+  } catch (err) {
+    console.error('[ServerJobs Worker] Recovery loop encountered error:', err);
+  }
+
+  return recoveredCount;
+}
+
 export async function submitServerJob(payload: ServerJobPayload): Promise<void> {
   const { jobId, userId = 'anonymous', kind, mode, text, images = [], imageUrls = [] } = payload;
   const dbKind = kind || 'food_log';
