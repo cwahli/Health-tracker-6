@@ -1,5 +1,7 @@
 import { AgentJob } from './types';
 import { ImageStore } from './ImageStore';
+import { MealBuild } from '../mealBuild/types';
+import { rebaseUserEdit } from '../mealBuild/consolidate';
 
 type Listener = () => void;
 
@@ -247,6 +249,26 @@ class JobStoreImpl {
     import('./SupabaseJobSync')
       .then((m) => m.deleteJobFromBackend(id))
       .catch((err) => console.warn('Failed to dispatch backend job deletion:', err));
+  }
+
+  rebaseJobMealEdit(
+    id: string,
+    localUserPatch: Partial<MealBuild>,
+    serverMeal: MealBuild
+  ): { rebasedMeal: MealBuild; success: boolean } {
+    const existingJob = this.getJob(id);
+    const currentAttempt = (existingJob?.mealBuild?.stageLedger?.filter((s) => s.actor === 'user')?.length || 0) + 1;
+    const result = rebaseUserEdit(serverMeal, localUserPatch, currentAttempt);
+    if (existingJob) {
+      this.updateJob(id, {
+        mealBuild: result.rebasedMeal,
+        result: {
+          ...(existingJob.result || {}),
+          mealBuild: result.rebasedMeal,
+        },
+      });
+    }
+    return result;
   }
 
   getJob(id: string): AgentJob | undefined {

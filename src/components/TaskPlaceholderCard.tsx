@@ -371,6 +371,16 @@ export default function TaskPlaceholderCard({
                 )}
               </div>
             )}
+
+            {job.status === 'succeeded' && (job.result?.comparison?.options || job.result?.comparisonSet?.optionMeals) && (
+              <div className="mt-1.5 flex flex-wrap gap-1.5 text-xs">
+                {(job.result?.comparison?.options || job.result?.comparisonSet?.optionMeals).slice(0, 3).map((opt: any, idx: number) => (
+                  <span key={idx} className="bg-indigo-50 dark:bg-indigo-950/40 text-indigo-700 dark:text-indigo-300 px-2 py-0.5 rounded-lg border border-indigo-100 dark:border-indigo-900/50 text-[11px] font-medium">
+                    {opt.name || opt.title || `Option ${idx + 1}`}: {opt.nutrients?.calories || opt.calories || 0} kcal
+                  </span>
+                ))}
+              </div>
+            )}
           </div>
 
           {/* Actions */}

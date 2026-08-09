@@ -158,3 +158,44 @@ export function consolidateMeal(
   
   return merged;
 }
+
+export function rebaseUserEdit(
+  serverMeal: MealBuild,
+  localUserPatch: Partial<MealBuild>,
+  attempt: number = 1
+): { rebasedMeal: MealBuild; success: boolean } {
+  if (attempt > 3) {
+    const errorMeal = appendHistory(serverMeal, {
+      type: 'error',
+      stage: 'rebase',
+      timestamp: new Date().toISOString(),
+      message: "Couldn't sync edit after 3 rebase attempts — tap Retry"
+    });
+    return { rebasedMeal: errorMeal, success: false };
+  }
+
+  const combinedDeleted = Array.from(new Set([
+    ...(serverMeal.deletedItemIds || []),
+    ...(localUserPatch.deletedItemIds || [])
+  ]));
+
+  const patchWithDeleted: Partial<MealBuild> = {
+    ...localUserPatch,
+    deletedItemIds: combinedDeleted
+  };
+
+  const rebased = consolidateMeal(serverMeal, patchWithDeleted, 'user_edit', {
+    expectedVersion: serverMeal.version,
+    actor: 'user',
+    attempt
+  });
+
+  const updatedMeal = appendHistory(rebased, {
+    type: 'user_action',
+    stage: 'user_edit',
+    timestamp: new Date().toISOString(),
+    message: `Rebased user edit on server version ${serverMeal.version} (attempt ${attempt})`
+  });
+
+  return { rebasedMeal: updatedMeal, success: true };
+}

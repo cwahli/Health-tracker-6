@@ -61,6 +61,7 @@ export async function hydrateUserJobs(userId: string = 'anonymous'): Promise<voi
           statusMessage: row.status_message || '',
           messages: initialMessages,
           result: cleanRes,
+          mealBuild: cleanRes?.mealBuild,
           photoUrl: photoUrl || row.photo_url || cleanRes?.photoUrl,
           debugUrl: debugUrl || row.debug_url || cleanRes?.debugUrl,
           inputSnapshot: {
@@ -75,6 +76,7 @@ export async function hydrateUserJobs(userId: string = 'anonymous'): Promise<voi
           progressPercent: row.progress_percent,
           statusMessage: row.status_message,
           result: cleanRes || existing.result,
+          mealBuild: cleanRes?.mealBuild || existing.mealBuild,
           photoUrl: photoUrl || row.photo_url || cleanRes?.photoUrl || existing.photoUrl,
           debugUrl: debugUrl || row.debug_url || cleanRes?.debugUrl || existing.debugUrl
         };
@@ -247,6 +249,14 @@ export async function upsertJobToSupabase(
 ): Promise<void> {
   if (!isSupabaseConfigured) return;
   try {
+    let finalCleanResult = cleanResult || job.result || null;
+    if (job.mealBuild) {
+      finalCleanResult = {
+        ...(finalCleanResult || {}),
+        mealBuild: job.mealBuild
+      };
+    }
+
     const payload = {
       id: job.id,
       user_id: userId,
@@ -257,7 +267,7 @@ export async function upsertJobToSupabase(
       status_message: job.statusMessage || '',
       photo_url: photoUrl || job.result?.photoUrl || null,
       debug_url: debugUrl || job.result?.debugUrl || null,
-      clean_result: cleanResult || job.result || null,
+      clean_result: finalCleanResult,
       updated_at: new Date().toISOString(),
     };
     
