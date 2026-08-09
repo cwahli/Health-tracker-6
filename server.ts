@@ -98,7 +98,7 @@ export async function fetchUSDAFoodById(fdcId: string): Promise<any | null> {
     const usdaApiKey = process.env.USDA_API_KEY || "DEMO_KEY";
     const url = `https://api.nal.usda.gov/fdc/v1/food/${fdcId}?api_key=${usdaApiKey}`;
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 5000);
+    const timeout = setTimeout(() => controller.abort(), 15000);
     const response = await fetch(url, { signal: controller.signal as any });
     clearTimeout(timeout);
     if (!response.ok) return null;
@@ -113,7 +113,7 @@ export async function fetchOFFProductByBarcode(barcode: string): Promise<any | n
   try {
     const url = `https://world.openfoodfacts.net/api/v2/product/${barcode}.json`;
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 5000);
+    const timeout = setTimeout(() => controller.abort(), 15000);
     const response = await fetch(url, {
       signal: controller.signal as any,
       headers: {
@@ -614,7 +614,7 @@ seedChainMenuSources();
 async function searchUSDA(query: string, maxResults: number = 5, dataTypes: string = 'Foundation,SR Legacy,Branded'): Promise<any[]> {
   try {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 5000);
+    const timeout = setTimeout(() => controller.abort(), 15000);
     const dataTypeQuery = dataTypes.split(',').map(d => 'dataType=' + encodeURIComponent(d)).join('&');
     const usdaApiKey = process.env.USDA_API_KEY || "DEMO_KEY";
     const fetchSize = 50;
@@ -754,7 +754,7 @@ async function searchUSDAWithTwoRounds(query: string, foodType: string, addDebug
 async function searchOpenFoodFacts(query: string, maxResults: number = 5): Promise<any[]> {
   try {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 8000);
+    const timeout = setTimeout(() => controller.abort(), 15000);
     const url = `https://world.openfoodfacts.net/cgi/search.pl?search_terms=${encodeURIComponent(query)}&page_size=${maxResults}&json=true`;
     
     const response = await fetch(url, {
@@ -945,7 +945,7 @@ async function searchOnlineWebNutrition(
     }
 
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 5000);
+    const timeout = setTimeout(() => controller.abort(), 15000);
     const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query + " nutrition calories protein")}`;
     const response = await fetch(url, {
       signal: controller.signal as any,
@@ -2024,7 +2024,7 @@ process.on('unhandledRejection', (reason) => {
   console.error('[UNHANDLED REJECTION]', reason);
 });
 const imageSearchCache = new Map<string, any>();
-const PORT = Number(process.env.PORT) || 3000;
+const PORT = 3000;
 const SERVER_START_TIME = Date.now();
 
 async function startServer() {
