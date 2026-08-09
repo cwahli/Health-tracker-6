@@ -1110,7 +1110,7 @@ export default function App() {
 
                   // Save diagnostic logs to log history page for portion clarify step
                   const reqId = serverJob.request_id || job.requestId || job.id;
-                  const rawLogs = cleanResult.backendLogs || serverJob.status_message || '';
+                  const rawLogs = cleanResult.agentResult?.backendLogs || cleanResult.backendLogs || serverJob.status_message || '';
                   const logsList = (typeof rawLogs === 'string' && rawLogs.trim().length > 0)
                     ? rawLogs.split('\n').filter(Boolean).map(line => ({ timestamp: new Date().toISOString(), message: line }))
                     : [{ timestamp: new Date().toISOString(), message: `[portion_clarify] ${clarifyMsg}` }];
@@ -1138,8 +1138,8 @@ export default function App() {
                       photoUrl: serverJob.photo_url || cleanResult.photoUrl,
                       debugUrl: serverJob.debug_url || cleanResult.debugUrl,
                       agentResult: {
-                        backendLogs: cleanResult.backendLogs || '',
-                        globalLiveLogs: cleanResult.backendLogs || '',
+                        backendLogs: cleanResult.agentResult?.backendLogs || cleanResult.backendLogs || '',
+                        globalLiveLogs: cleanResult.agentResult?.backendLogs || cleanResult.backendLogs || '',
                         scoutItems: cleanResult.scoutItems || [],
                         activeStage: 'portion_clarify',
                       },

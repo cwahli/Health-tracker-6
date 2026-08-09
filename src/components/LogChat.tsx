@@ -2437,10 +2437,14 @@ ${logsText}`);
           (m.data?.agentResult?.scoutItems && m.data.agentResult.scoutItems.length > 0)
         );
         const jobScoutItems = currentJobId ? (JobStore.getJob(currentJobId)?.result?.scoutItems || JobStore.getJob(currentJobId)?.result?.clean_result?.scoutItems) : undefined;
-        const scoutItemsForJob = lastScoutMsgForJob?.data?.scoutItems || 
+        // Prefer scout items passed explicitly by the caller (e.g. PortionClarifyCard's
+        // onConfirm) over indirect lookups, so a portion-confirm resume never loses them.
+        const explicitScoutItems = Array.isArray(extraOptions?.scoutItems) ? extraOptions.scoutItems : undefined;
+        const scoutItemsForJob = (explicitScoutItems && explicitScoutItems.length > 0) ? explicitScoutItems :
+          (lastScoutMsgForJob?.data?.scoutItems || 
           lastScoutMsgForJob?.data?.agentResult?.scoutItems || 
           jobScoutItems ||
-          activeScoutItemsFallback || [];
+          activeScoutItemsFallback || []);
 
         let userContent = textToSend;
         if (extraOptions?.portionChoices && typeof extraOptions.portionChoices === 'object') {
@@ -5600,7 +5604,17 @@ ${JSON.stringify(profile, null, 2)}`);
                             portionClarify={msg.data.portionClarify}
                             onConfirm={(choices: any) => {
                               if (typeof handleSend === 'function') {
-                                handleSend(JSON.stringify(choices), [], { portionChoices: choices, skipScout: true });
+                                // Pass the scout item(s) straight from this message so the
+                                // resume request never depends on re-deriving them elsewhere.
+                                const clarifyScoutItems = (msg.data?.scoutItems && msg.data.scoutItems.length > 0)
+                                  ? msg.data.scoutItems
+                                  : (msg.data?.agentResult?.scoutItems || []);
+                                handleSend(JSON.stringify(choices), [], {
+                                  portionChoices: choices,
+                                  skipScout: true,
+                                  scoutItems: clarifyScoutItems,
+                                  activeScoutItems: clarifyScoutItems,
+                                });
                               }
                             }}
                           />

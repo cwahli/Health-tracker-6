@@ -288,6 +288,15 @@ export async function submitServerJob(payload: ServerJobPayload): Promise<void> 
       }
 
       if (finalData.needsPortionClarify) {
+        // Defensive mirror: make sure backendLogs is readable both at the top level
+        // and under agentResult, regardless of which one a given client build reads.
+        finalData.backendLogs = finalData.backendLogs
+          || finalData.agentResult?.backendLogs
+          || accumulatedLogs.join('\n').slice(0, 200000);
+        if (finalData.agentResult) {
+          finalData.agentResult.backendLogs = finalData.agentResult.backendLogs || finalData.backendLogs;
+        }
+
         const memJob = inMemoryServerJobs.get(jobId);
         if (memJob) {
           memJob.status = 'awaiting_user';
