@@ -44,6 +44,57 @@ export function mergeByRecency<T extends { id: string; updated_at?: number }>(
   return Array.from(mergedMap.values());
 }
 
+/**
+ * Max-merge two tombstone maps (id → deleted-at ms).
+ * Shared by profile merge and tests — never drop the other device's deletes.
+ */
+export function mergeDeleteMaps(
+  a: Record<string, number> = {},
+  b: Record<string, number> = {}
+): Record<string, number> {
+  const merged: Record<string, number> = { ...a };
+  for (const [k, v] of Object.entries(b)) {
+    merged[k] = Math.max(merged[k] || 0, v as number);
+  }
+  return merged;
+}
+
+/** presence = id in map (any positive ts); recency = tombstoneTs >= updated_at */
+export type TombstoneMode = 'presence' | 'recency';
+
+/**
+ * Whether a log id is tombstoned.
+ * Tombstone value 0 is treated as "no tombstone" (falsy trap; do not store 0).
+ */
+export function isLogTombstoned(
+  id: string | undefined,
+  updated_at: number | undefined,
+  deletedMap: Record<string, number> | undefined,
+  mode: TombstoneMode = 'recency'
+): boolean {
+  if (!id || !deletedMap) return false;
+  const t = deletedMap[id];
+  if (t == null || t === 0) return false;
+  if (mode === 'presence') return true;
+  return t >= (updated_at || 0);
+}
+
+/** Filter logs by sync_state delete + tombstone map. */
+export function filterLogsByTombstone<
+  T extends { id: string; updated_at?: number; sync_state?: string }
+>(
+  items: T[],
+  deletedMap: Record<string, number> = {},
+  mode: TombstoneMode = 'recency'
+): T[] {
+  return (items || []).filter(
+    (item) =>
+      item &&
+      item.sync_state !== 'delete' &&
+      !isLogTombstoned(item.id, item.updated_at, deletedMap, mode)
+  );
+}
+
 export function foodLogToSupabaseRow(food: FoodLog, uid: string) {
   return {
     id: food.id,
@@ -811,17 +862,9 @@ export function mergeProfiles(cloudProfile: UserProfile | null, localProfile: Us
     delete customBiomarkers[k];
   });
 
-  const mergeDeletes = (cloud: any = {}, local: any = {}) => {
-    const merged = { ...cloud };
-    for (const [k, v] of Object.entries(local)) {
-      merged[k] = Math.max(merged[k] || 0, v as number);
-    }
-    return merged;
-  };
-
-  const deletedFoodLogIds = mergeDeletes(secondary.deletedFoodLogIds, primary.deletedFoodLogIds);
-  const deletedBiomarkerLogIds = mergeDeletes(secondary.deletedBiomarkerLogIds, primary.deletedBiomarkerLogIds);
-  const deletedNotUsedBiomarkerKeys = mergeDeletes(secondary.deletedNotUsedBiomarkerKeys, primary.deletedNotUsedBiomarkerKeys);
+  const deletedFoodLogIds = mergeDeleteMaps(secondary.deletedFoodLogIds, primary.deletedFoodLogIds);
+  const deletedBiomarkerLogIds = mergeDeleteMaps(secondary.deletedBiomarkerLogIds, primary.deletedBiomarkerLogIds);
+  const deletedNotUsedBiomarkerKeys = mergeDeleteMaps(secondary.deletedNotUsedBiomarkerKeys, primary.deletedNotUsedBiomarkerKeys);
 
   // Union notUsedBiomarkers by key instead of letting the outer object spread clobber one
   // side wholesale. A tombstone (deletedNotUsedBiomarkerKeys) wins over a stale flaggedAt

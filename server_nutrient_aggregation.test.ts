@@ -261,4 +261,31 @@ describe("server_nutrient_aggregation", () => {
     expect(result.itemsBreakdown[0].lockedNutrientKeys).toContain("protein");
     expect(result.itemsBreakdown[0].lockedNutrientKeys).toContain("sodium");
   });
+
+  it("preserves rawNutritionLabel and components on itemsBreakdown", () => {
+    const components = [{ searchQuery: "beef", volumePercentage: 60 }];
+    const rawNutritionLabel = { calories: "37 kcal", protein: "7.3g" };
+    const rawItems = [
+      {
+        name: "Co-op topside",
+        weightGrams: 25,
+        dbSource: "estimated",
+        components,
+        rawNutritionLabel,
+        labelNutrientsPerServing: {
+          servingSizeGrams: 25,
+          calories: 37,
+          protein: 7.3,
+          totalFat: 0.6,
+        },
+        truthNutrients: { calories: 37, protein: 7.3 },
+        lockedNutrientKeys: ["calories", "protein"],
+      },
+    ];
+    const result = aggregateItemsNutrients(rawItems, 25, new Map(), [], () => {});
+    expect(result.itemsBreakdown[0].rawNutritionLabel).toEqual(rawNutritionLabel);
+    expect(result.itemsBreakdown[0].components).toEqual(components);
+    expect(result.nutrients.calories).toBe(37);
+    expect(result.nutrients.protein).toBe(7.3);
+  });
 });

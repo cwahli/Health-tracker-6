@@ -539,7 +539,9 @@ export function getMappedBiomarkerKey(rawKey: string): string {
 
   if (CUSTOM_KEY_ALIASES[clean]) return CUSTOM_KEY_ALIASES[clean];
   if (CUSTOM_KEY_ALIASES[cleanNoUnderscore]) return CUSTOM_KEY_ALIASES[cleanNoUnderscore];
-  return rawKey;
+  // Canonicalize unknown keys to lowercase slug form so "Hemoglobin" and "hemoglobin"
+  // cannot become parallel dictionary identities.
+  return clean || rawKey;
 }
 
 export function getCustomBiomarkerDef(profile: any, coreKey: string) {

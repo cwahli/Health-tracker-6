@@ -45,6 +45,44 @@ describe("server_vision_scout", () => {
       expect(merged[0].rawNutritionLabel).toEqual({ servingSize: "50g" });
       expect(merged[0].boundingBox2D).toEqual([1, 2, 3, 4]);
     });
+
+    it("preserves vision estimatedCalories, weight, components, and rawNutritionLabel over LLM overwrite", () => {
+      const visionItems = [
+        {
+          scoutIndex: 0,
+          keyword: "poke bowl",
+          estimatedCalories: 550,
+          estimatedWeightGrams: 400,
+          components: [{ searchQuery: "rice", volumePercentage: 50 }],
+          rawNutritionLabel: { calories: "450 kcal" },
+        },
+      ];
+      const llmItems = [
+        {
+          scoutIndex: 0,
+          keyword: "poke",
+          estimatedCalories: 900,
+          estimatedWeightGrams: 100,
+          components: [],
+          rawNutritionLabel: { calories: "999" },
+        },
+      ];
+      const merged = mergeScoutItems(visionItems, llmItems);
+      expect(merged).toHaveLength(1);
+      expect(merged[0].estimatedCalories).toBe(550);
+      expect(merged[0].estimatedWeightGrams).toBe(400);
+      expect(merged[0].rawNutritionLabel).toEqual({ calories: "450 kcal" });
+      expect(merged[0].components).toEqual([{ searchQuery: "rice", volumePercentage: 50 }]);
+      expect(merged[0].keyword).toBe("poke");
+    });
+
+    it("falls back to LLM estimatedCalories when vision soft cal is null/undefined", () => {
+      const visionItems = [{ scoutIndex: 1, estimatedCalories: undefined, estimatedWeightGrams: undefined }];
+      const llmItems = [{ scoutIndex: 1, estimatedCalories: 420, estimatedWeightGrams: 300 }];
+      const merged = mergeScoutItems(visionItems, llmItems);
+      expect(merged[0].estimatedCalories).toBe(420);
+      expect(merged[0].estimatedWeightGrams).toBe(300);
+    });
   });
 
   describe("parseAndHealVisionScout", () => {

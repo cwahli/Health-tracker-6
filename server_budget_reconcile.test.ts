@@ -4,7 +4,8 @@ import {
   reconcileNutrients,
   portionAndReconcile,
   assertComponentSumMatchesItem,
-  sumNutrientMapsAdditive
+  sumNutrientMapsAdditive,
+  parseLabelCalories,
 } from './server_budget_reconcile';
 
 describe('Server Budget & Reconcile Logic', () => {
@@ -174,5 +175,77 @@ describe('Server Budget & Reconcile Logic', () => {
     expect(total.protein).toBe(7.5);
     expect(total.carbohydrates).toBe(20);
     expect(total.totalFat).toBe(4);
+  });
+
+  describe('parseLabelCalories', () => {
+    it('parses kcal strings and dual kJ/kcal', () => {
+      expect(parseLabelCalories('187 kcal')).toBe(187);
+      expect(parseLabelCalories('783 kJ / 187 kcal')).toBe(187);
+      expect(parseLabelCalories({ calories: 220 })).toBe(220);
+    });
+    it('converts kJ-only and rejects junk', () => {
+      const kj = parseLabelCalories('418.4 kJ');
+      expect(kj).toBeCloseTo(100, 0);
+      expect(parseLabelCalories(null)).toBeNull();
+      expect(parseLabelCalories('n/a')).toBeNull();
+    });
+  });
+
+  it('dish_cache beats scout when no hard label', () => {
+    const res = computeItemBudget({
+      itemName: 'Cached Dish',
+      weightGrams: 300,
+      dishCacheKcal: 480,
+      scoutEstimatedCalories: 600,
+    });
+    expect(res.source).toBe('dish_cache');
+    expect(res.budgetKcal).toBe(480);
+    expect(res.hardLock).toBe(false);
+  });
+
+  it('brand menu kcal is hard lock when no label', () => {
+    const res = computeItemBudget({
+      itemName: 'Brand Burger',
+      weightGrams: 250,
+      brandMenuKcal: 710,
+      scoutEstimatedCalories: 500,
+    });
+    expect(res.source).toBe('brand');
+    expect(res.hardLock).toBe(true);
+    expect(res.budgetKcal).toBe(710);
+  });
+
+  it('incompleteAssembly rejects extreme scale (keeps foundation)', () => {
+    const budget = computeItemBudget({
+      itemName: 'Incomplete Bowl',
+      weightGrams: 400,
+      scoutEstimatedCalories: 800,
+    });
+    const rec = reconcileNutrients({
+      nutrients: { calories: 200, protein: 5, totalFat: 2, carbohydrates: 20 },
+      budget,
+      incompleteAssembly: true,
+    });
+    expect(rec.action).toBe('reject_scale');
+    expect(rec.finalKcal).toBe(200);
+    expect(rec.scaleFactor).toBe(1);
+  });
+
+  it('assertComponentSumMatchesItem passes when rows sum to item', () => {
+    const inv = assertComponentSumMatchesItem([100, 100], 200);
+    expect(inv.ok).toBe(true);
+  });
+
+  it('portionAndReconcile hard label locks final kcal', () => {
+    const res = portionAndReconcile({
+      nutrientsPer100g: { calories: 200, protein: 10, totalFat: 5, carbohydrates: 25 },
+      weightGrams: 200,
+      itemName: 'Labeled Pack',
+      hardLabelKcal: 350,
+      scoutEstimatedCalories: 500,
+    });
+    expect(res.budget.hardLock).toBe(true);
+    expect(res.action).toBe('hard_lock');
+    expect(res.finalKcal).toBe(350);
   });
 });
