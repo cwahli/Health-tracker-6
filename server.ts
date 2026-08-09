@@ -19,8 +19,9 @@ import {
   buildPortionClarifyPayload,
   applyPortionChoices,
 } from './server_portion_clarify.js';
-import { markDietitianDegraded, buildSavableMealFromParsed } from './server_meal_orchestrator.js';
-import { toPendingFoodLog } from './src/mealBuild/adapters.js';
+import { attachHappyPathMealBuild, markDietitianDegraded, buildSavableMealFromParsed } from './server_meal_orchestrator.js';
+import { toPendingFoodLog, fromEvaluationComparison } from './src/mealBuild/adapters.js';
+import { projectDietitianInput } from './src/mealBuild/projectors.js';
 import {
   detectWeightRefineIntent,
   shouldSkipScoutForWeightRefine,
@@ -7709,6 +7710,10 @@ Current User Input: "${message}"`) + modeDPromptSuffix;
       return { textOutput, rawParsed };
     }
 
+    addDebugLog('[MealBuild] projector dietitian');
+    const dietitianTempMeal = buildSavableMealFromParsed(preCalculatedItems || [], activeMeal, aggregatedNutrients, null);
+    const dietitianProjection = projectDietitianInput(dietitianTempMeal, userProfile);
+
     const llmCallArgs = {
       modelId: (typeof engine === 'object' ? engine?.name || engine?.model : engine) || "gemini-3.5-flash-lite", // Updating to flash-lite as recommended
       systemInstruction: finalSystemInstruction,
@@ -7901,10 +7906,16 @@ Current User Input: "${message}"`) + modeDPromptSuffix;
       comparisonData.groups = applyServerAverageNutrients(resolvedGroups, preCalcByScoutIndex);
       comparisonData.isMenuScale = isMenuScale;
       
+      addDebugLog('[MealBuild] mode=D');
+      const comparisonSet = fromEvaluationComparison(comparisonData, visionScoutItems, {
+        id: req.body.jobId || `cmp_${Date.now()}`,
+      });
+
       return res.json({
         mode: "evaluation",
         dietitianScratchpad: rawParsed._internalReasoning,
         comparison: comparisonData,
+        comparisonSet,
         scoutItems: mergeScoutItems(visionScoutItems, rawParsed.scoutItems),
         scoutContentType: visionScoutContentType,
         agentPrompt: fullPromptSent,
@@ -9342,16 +9353,34 @@ Current User Input: "${message}"`) + modeDPromptSuffix;
         });
       }
 
-      return res.json({
+      addDebugLog('[MealBuild] happy-path');
+      const { mealBuild, pendingFoodLog } = attachHappyPathMealBuild({
+        parsedData,
+        jobId: req.body.jobId,
+        activeMeal: req.body.activeMeal,
+        scoutItems: finalScoutItems,
+        diningEnvironment,
+      });
+
+      const responsePayload = {
         mode: "new_log",
         dietitianScratchpad: rawParsed._internalReasoning,
         text: rawParsed.message || `I have analyzed the food: **${parsedData.name}** (${parsedData.quantity}).`,
         message: rawParsed.message || `I have analyzed the food: **${parsedData.name}** (${parsedData.quantity}).`,
-        data: parsedData,
+        data: pendingFoodLog || parsedData,
+        mealBuild,
+        savable: true,
         agentPrompt: fullPromptSent,
         scoutItems: finalScoutItems,
         apiCalls
-      });
+      };
+
+      if (isStream && hasSentHeaders) {
+        res.write(`data: ${JSON.stringify({ final: true, result: responsePayload })}\n\n`);
+        return res.end();
+      }
+
+      return res.json(responsePayload);
     }
 
     // CASE C: modification commands mode (Math-only fallbacks)

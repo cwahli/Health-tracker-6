@@ -188,7 +188,11 @@ export function buildDebugMarkdownReport(input: DebugReportInput): string {
       lines.push(`### History Log`);
       lines.push('');
       for (const entry of input.historyLog.slice(-100)) {
-        lines.push(`- **${entry.at}** [${entry.kind}]: ${entry.message} ${entry.detail ? `(${entry.detail})` : ''}`);
+        const when = entry.at || entry.timestamp || '';
+        const kind = entry.kind || entry.type || 'event';
+        const msg = entry.message || '';
+        const det = entry.detail || entry.details ? ` (${entry.detail || entry.details})` : '';
+        lines.push(`- **${when}** [${kind}]: ${msg}${det}`);
       }
     }
 

@@ -372,11 +372,17 @@ export default function TaskPlaceholderCard({
               </div>
             )}
 
-            {job.status === 'succeeded' && (job.result?.comparison?.options || job.result?.comparisonSet?.optionMeals) && (
+            {(job.result?.mealBuild?.staleDietitianNarrative || (job as any).mealBuild?.staleDietitianNarrative) && (
+              <div className="text-amber-700 dark:text-amber-400 text-xs mt-1 bg-amber-50 dark:bg-amber-950/40 px-2 py-1 rounded border border-amber-200 dark:border-amber-800">
+                Macros updated — coaching may reflect a previous portion. Use Retry Advice to refresh.
+              </div>
+            )}
+
+            {job.status === 'succeeded' && (job.result?.comparisonSet?.optionMeals || job.result?.comparison?.options || job.result?.comparison?.groups) && (
               <div className="mt-1.5 flex flex-wrap gap-1.5 text-xs">
-                {(job.result?.comparison?.options || job.result?.comparisonSet?.optionMeals).slice(0, 3).map((opt: any, idx: number) => (
+                {(job.result?.comparisonSet?.optionMeals || job.result?.comparison?.options || job.result?.comparison?.groups || []).slice(0, 3).map((opt: any, idx: number) => (
                   <span key={idx} className="bg-indigo-50 dark:bg-indigo-950/40 text-indigo-700 dark:text-indigo-300 px-2 py-0.5 rounded-lg border border-indigo-100 dark:border-indigo-900/50 text-[11px] font-medium">
-                    {opt.name || opt.title || `Option ${idx + 1}`}: {opt.nutrients?.calories || opt.calories || 0} kcal
+                    {opt.groupName || opt.content?.name || opt.name || opt.title || `Option ${idx + 1}`}: {opt.nutrients?.calories || opt.calories || 0} kcal
                   </span>
                 ))}
               </div>

@@ -181,6 +181,14 @@ Complete. Not the master focus of this handover.
 **Do not** edit `AGENTS.md` / `docs/agent/**` without confirmation + before→after.
 
 ### Session notes (multi-agent — append short bullets)
+- 2026-08-09: Completed M21.1 Meal Build Completion (`studio/M21_1_MEAL_BUILD_COMPLETION_GATES.md`):
+  - Hard gate `scripts/assert-meal-build-m21-1.mjs` passed (exit 0).
+  - Wired `attachHappyPathMealBuild` on `new_log` success path in `server.ts`.
+  - Wired `projectDietitianInput` call site in `server.ts` before dietitian LLM call.
+  - Updated Mode D evaluation branch in `server.ts` to attach `comparisonSet` and log `[MealBuild] mode=D`.
+  - Updated `TaskPlaceholderCard.tsx` to handle `comparison.groups` / `comparisonSet` and render `staleDietitianNarrative` warning badge.
+  - Updated `JobQueueRunner.ts` done handler to store `mealBuild` on job completion.
+  - Verified all tests: `m21_1_completion.test.ts` (6/6 PASS), full `mealBuild` suite (25/25 PASS), food-calc suite (42/42 PASS), `npx tsc --noEmit` (0 errors), and `compile_applet` (succeeded).
 - 2026-08-09: Implemented Formalized Pure Projectors (`plan §3A`) and Bi-directional Agent Reflection Loop:
   - Created `src/mealBuild/projectors.ts` with standalone stage input masks (`projectScoutInput`, `projectResolverInput`, `projectCalculatorInput`, `projectDietitianInput`) preventing context bloat and raw payload dilution.
   - Created `src/mealBuild/reflection.ts` providing `evaluateResolverConfidence` and `buildVisionCropReQuery` to trigger targeted crop re-queries for low-confidence (<60%) candidate matches before category fallback.

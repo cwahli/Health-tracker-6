@@ -67,18 +67,27 @@ export function fromEvaluationComparison(comparison: any, scoutItems: any[], met
     ...meta
   };
   
-  if (comparison && Array.isArray(comparison.options)) {
-    set.optionMeals = comparison.options.map((opt: any, index: number) => {
-      // Find matching scout items
-      const items = (opt.items || []).map((optItem: any) => {
-        const scoutMatch = scoutItems?.find(s => s.name === optItem.name || s.name === optItem.title);
-        return {
-          ...scoutMatch,
-          ...optItem,
-          scoutIndex: scoutMatch?.scoutIndex,
-        };
-      });
-      
+  const rawGroups =
+    (Array.isArray(comparison?.groups) && comparison.groups) ||
+    (Array.isArray(comparison?.options) && comparison.options) ||
+    [];
+
+  if (rawGroups.length > 0) {
+    set.optionMeals = rawGroups.map((group: any, index: number) => {
+      let items: any[] = [];
+      if (Array.isArray(group.items) && group.items.length > 0) {
+        items = group.items.map((optItem: any) => {
+          const scoutMatch = scoutItems?.find(s => s.name === optItem.name || s.name === optItem.title || s.scoutIndex === optItem.scoutIndex);
+          return {
+            ...scoutMatch,
+            ...optItem,
+            scoutIndex: optItem.scoutIndex ?? scoutMatch?.scoutIndex,
+          };
+        });
+      } else if (Array.isArray(group.scoutItemIndices) && scoutItems) {
+        items = group.scoutItemIndices.map((idx: number) => scoutItems[idx] || scoutItems.find(s => s.scoutIndex === idx)).filter(Boolean);
+      }
+
       const meal: MealBuild = {
         id: Math.random().toString(36).substring(2, 9),
         schemaVersion: 1,
@@ -86,14 +95,14 @@ export function fromEvaluationComparison(comparison: any, scoutItems: any[], met
         mode: 'compare_option',
         parentComparisonId: set.id,
         items,
-        nutrients: opt.nutrients || {},
+        nutrients: group.nutrients || {},
         content: {
-          name: opt.name || opt.title || `Option ${index + 1}`,
-          benefits: opt.benefits || [],
-          risks: opt.risks || [],
-          recommendation: opt.recommendation || '',
-          verdict: opt.verdict || '',
-          message: opt.message || '',
+          name: group.groupName || group.name || group.title || `Option ${index + 1}`,
+          benefits: group.benefits || [],
+          risks: group.risks || [],
+          recommendation: group.recommendation || '',
+          verdict: group.verdict || '',
+          message: group.message || '',
         }
       };
       return meal;
@@ -104,14 +113,18 @@ export function fromEvaluationComparison(comparison: any, scoutItems: any[], met
 }
 
 export function toEvaluationPayload(set: ComparisonSet): { mode: 'evaluation'; comparison: any, scoutItems?: any[], message?: string } {
+  const formattedOptions = set.optionMeals.map(meal => ({
+    ...toPendingFoodLog(meal),
+    groupName: meal.content?.name,
+    name: meal.content?.name,
+    title: meal.content?.name,
+  }));
+
   return {
     mode: 'evaluation',
     comparison: {
-      options: set.optionMeals.map(meal => ({
-        ...toPendingFoodLog(meal),
-        name: meal.content?.name,
-        title: meal.content?.name,
-      }))
+      groups: formattedOptions,
+      options: formattedOptions,
     },
     scoutItems: set.optionMeals.flatMap(m => m.items),
     message: set.content?.message || 'Comparison ready.'

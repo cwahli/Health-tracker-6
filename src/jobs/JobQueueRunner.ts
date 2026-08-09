@@ -74,8 +74,11 @@ class JobQueueRunnerImpl {
             liveThoughts: event.partialThoughts,
           });
         } else if (event.type === 'done') {
+          const res = event.data || {};
+          const mb = res.mealBuild || res.data?.mealBuild || job.mealBuild;
           JobStore.updateJob(job.id, {
-            result: event.data,
+            result: res,
+            mealBuild: mb,
             progressPercent: 100,
             statusMessage: 'Analysis completed',
           });
