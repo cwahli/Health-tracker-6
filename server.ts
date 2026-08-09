@@ -5909,8 +5909,26 @@ function parseServingSizeGrams(ssVal: string, totalItemWeight: number): number {
         const origTokens = tokenize(origNorm);
         const keyTokens = tokenize(keyNorm);
 
+        const DISH_FORM_WORDS = new Set([
+          'sandwich', 'side', 'cup', 'bites', 'bowl', 'salad', 'wrap', 'burger',
+          'sub', 'roll', 'bar', 'shake', 'platter', 'box', 'meal'
+        ]);
+
         const checkTokenMatch = (targetTokens: string[]) => {
           if (targetTokens.length === 0 || mTokens.length === 0) return false;
+
+          // Guard: if the query names a specific dish "form" (side, sandwich, cup, bowl, bites,
+          // etc.) and the candidate names a DIFFERENT form, reject outright. Sharing brand + main
+          // ingredient words (e.g. "chicken") is not enough — "Chicken Side" and "Chicken
+          // Sandwich" are different items/portions. Mirrors the Food Resolver's existing
+          // BAR vs CUP/BOWL rule, applied here to the deterministic matcher.
+          const targetForms = targetTokens.filter(t => DISH_FORM_WORDS.has(t));
+          const mForms = mTokens.filter(t => DISH_FORM_WORDS.has(t));
+          if (targetForms.length > 0 && mForms.length > 0) {
+            const compatible = targetForms.some(tf => mForms.includes(tf));
+            if (!compatible) return false;
+          }
+
           let shared = 0;
           targetTokens.forEach(t => {
             if (mTokens.some(mt => mt.startsWith(t) || t.startsWith(mt))) {

@@ -1684,6 +1684,11 @@ export async function searchBrandMenuItems(query: string, explicitChainKey?: str
   const normQ = normalizeDishKey(query);
   const qLower = query.toLowerCase();
 
+  const DISH_FORM_WORDS = new Set([
+    'sandwich', 'side', 'cup', 'bites', 'bowl', 'salad', 'wrap', 'burger',
+    'sub', 'roll', 'bar', 'shake', 'platter', 'box', 'meal'
+  ]);
+
   const scoreDishMatch = (queryKey: string, itemKey: string, chainKey?: string): number => {
     if (queryKey === itemKey) return 999;
     if (chainKey && queryKey === `${chainKey}_${itemKey}`) return 999;
@@ -1693,6 +1698,16 @@ export async function searchBrandMenuItems(query: string, explicitChainKey?: str
     const qWords = new Set(queryKey.split('_').filter(w => w.length > 2));
     const iWords = new Set(itemKey.split('_').filter(w => w.length > 2));
     if (qWords.size === 0 || iWords.size === 0) return 0;
+
+    // Guard: reject candidates whose dish "form" word (side/sandwich/cup/bowl/bites/etc.)
+    // conflicts with the query's form word, even if other words overlap. Prevents e.g.
+    // "Chicken Side" scoring a match against "Chicken Sandwich" purely on shared brand +
+    // ingredient words.
+    const qForms = [...qWords].filter(w => DISH_FORM_WORDS.has(w));
+    const iForms = [...iWords].filter(w => DISH_FORM_WORDS.has(w));
+    if (qForms.length > 0 && iForms.length > 0 && !qForms.some(f => iForms.includes(f))) {
+      return 0;
+    }
 
     let shared = 0;
     qWords.forEach(w => { if (iWords.has(w)) shared++; });
