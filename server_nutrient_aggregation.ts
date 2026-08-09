@@ -56,6 +56,19 @@ export function aggregateItemsNutrients(
       itemNutrients[key] = 0;
     }
 
+    // Computed early (was previously computed near the end of this loop, AFTER the sugar
+    // engine calls below — which meant deduceSugarBreakdown() never saw the real physicalForm
+    // and whole-food/dairy sugar immunity never fired). Single source of truth for the rest
+    // of this item's processing.
+    const physicalFormClassification = item.physicalFormClassification || classifyUniversalPhysicalFormV3({
+      name: canonicalName,
+      canonicalDbName: canonicalName,
+      originalLocalName: item.originalLocalName || item.originalName,
+      keyword: item.keyword || canonicalName,
+      visualIngredients: item.visualIngredients,
+      components: item.components
+    });
+
     const labelData = item.labelNutrientsPerServing;
     let servingSizeGrams = labelData && labelData.servingSizeGrams !== undefined && labelData.servingSizeGrams !== null
       ? Number(labelData.servingSizeGrams)
@@ -227,7 +240,7 @@ export function aggregateItemsNutrients(
           visualCoating: 0.5,
           diningEnvironment: item.diningEnvironment || 'unknown',
           hasSauceOrDressing: hasSauces,
-          physicalForm: item.physicalFormClassification?.physicalForm,
+          physicalForm: physicalFormClassification.physicalForm,
           dbSource: item.dbSource || dbSource,
         });
 
@@ -255,7 +268,7 @@ export function aggregateItemsNutrients(
           addedSugarPrinted: null,
           carbohydrates: sumCarbs,
           totalFibre: sumFibre,
-          physicalForm: item.physicalFormClassification?.physicalForm,
+          physicalForm: physicalFormClassification.physicalForm,
           ingredientsList: item.ingredientsList,
         });
         itemNutrients.sugar = sugarResult.sugar;
@@ -345,7 +358,7 @@ export function aggregateItemsNutrients(
       visualCoating: visualCoating,
       diningEnvironment: diningEnvironment,
       hasSauceOrDressing: hasSauceOrDressing,
-      physicalForm: item.physicalFormClassification?.physicalForm,
+      physicalForm: physicalFormClassification.physicalForm,
       dbSource: item.dbSource || dbSource,
     });
 
@@ -377,7 +390,7 @@ export function aggregateItemsNutrients(
         originalName: item.originalName || item.originalLocalName || item.keyword,
         keyword: item.keyword,
         componentCount: Array.isArray(item.components) ? item.components.length : 0,
-        physicalForm: item.physicalFormClassification?.physicalForm,
+        physicalForm: physicalFormClassification.physicalForm,
         chainName: item.chainName || null,
       }
     );
@@ -441,7 +454,7 @@ export function aggregateItemsNutrients(
         addedSugarPrinted: labelData?.addedSugar != null ? Number(labelData.addedSugar) : null,
         carbohydrates: itemNutrients.carbohydrates,
         totalFibre: itemNutrients.totalFibre,
-        physicalForm: item.physicalFormClassification?.physicalForm,
+        physicalForm: physicalFormClassification.physicalForm,
         ingredientsList: item.ingredientsList,
       });
       itemNutrients.sugar = sugarResult.sugar;
@@ -488,15 +501,6 @@ export function aggregateItemsNutrients(
       nutrients[key] = cleanNutrientNumber(nutrients[key] + (itemNutrients[key] || 0));
     }
 
-    const physicalFormClassification = item.physicalFormClassification || classifyUniversalPhysicalFormV3({
-      name: canonicalName,
-      canonicalDbName: canonicalName,
-      originalLocalName: item.originalLocalName || item.originalName,
-      keyword: item.keyword || canonicalName,
-      visualIngredients: item.visualIngredients,
-      components: item.components
-    });
-
     const matchType = dbSource === "usda" ? "USDA FDC Entry" : dbSource === "off" ? "Open Food Facts Entry" : dbSource === "backend_calculated" || dbSource === "canonical" ? "Canonical Base Food Reference" : "Universal Nutrient Estimator";
 
     const displayName = sanitizeString(
@@ -520,6 +524,7 @@ export function aggregateItemsNutrients(
       saturatedFat: itemNutrients.saturatedFat || 0,
       transFat: itemNutrients.transFat || 0,
       carbohydrates: itemNutrients.carbohydrates || 0,
+      sugar: itemNutrients.sugar || 0,
       addedSugar: itemNutrients.addedSugar || 0,
       sodium: itemNutrients.sodium || 0,
       potassium: itemNutrients.potassium || 0,
