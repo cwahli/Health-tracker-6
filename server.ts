@@ -14278,9 +14278,6 @@ app.post('/admin/migrate', async (req, res) => {
 });
 
   const distPath = path.join(process.cwd(), "dist");
-  if (fs.existsSync(distPath)) {
-    app.use(express.static(distPath));
-  }
   if (process.env.NODE_ENV === "production") {
     app.use(express.static(distPath));
     app.get("*", (req, res) => {
