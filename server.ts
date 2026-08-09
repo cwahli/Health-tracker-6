@@ -5946,6 +5946,7 @@ function parseServingSizeGrams(ssVal: string, totalItemWeight: number): number {
         let webCarbs = Number(truthMatch.carbohydrates ?? truthMatch.carbs ?? 0);
         let webFibre = Number(truthMatch.totalFibre ?? truthMatch.fiber ?? 0);
         let webAddedSugar = truthMatch.addedSugar != null ? Number(truthMatch.addedSugar) : 0;
+        let webSugar = truthMatch.sugar != null ? Number(truthMatch.sugar) : 0;
         let webPotassium = Number(truthMatch.potassium || 0);
 
         const rawBaseCals = webCals;
@@ -6015,6 +6016,7 @@ function parseServingSizeGrams(ssVal: string, totalItemWeight: number): number {
           webCarbs = Math.round(webCarbs * servingScale * 10) / 10;
           webFibre = Math.round(webFibre * servingScale * 10) / 10;
           webAddedSugar = Math.round(webAddedSugar * servingScale * 10) / 10;
+          webSugar = Math.round(webSugar * servingScale * 10) / 10;
           webPotassium = Math.round(webPotassium * servingScale);
         }
 
@@ -6028,6 +6030,7 @@ function parseServingSizeGrams(ssVal: string, totalItemWeight: number): number {
         if (fibreKnown) lockTruth('totalFibre', webFibre);
         // Printed sugar / added sugar / potassium / trans fat (label panels often have these)
         if (truthMatch.addedSugar != null) lockTruth('addedSugar', webAddedSugar);
+        if (truthMatch.sugar != null) lockTruth('sugar', webSugar);
         if (truthMatch.potassium != null) lockTruth('potassium', webPotassium);
         if (truthMatch.transFat != null) lockTruth('transFat', Number(truthMatch.transFat) * servingScale);
 
