@@ -14278,10 +14278,12 @@ app.post('/admin/migrate', async (req, res) => {
 });
 
   const distPath = path.join(process.cwd(), "dist");
-  if (fs.existsSync(distPath)) {
+  const hasBuiltDist = fs.existsSync(distPath);
+  if (hasBuiltDist) {
+    // A production build is present on disk: serve it directly and never spin up
+    // a dev-only Vite server in this process, regardless of NODE_ENV (this
+    // deployment's platform does not reliably set NODE_ENV=production).
     app.use(express.static(distPath));
-  }
-  if (process.env.NODE_ENV === "production") {
     app.get("*", (req, res) => {
       res.sendFile(path.join(distPath, "index.html"));
     });
