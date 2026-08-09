@@ -7,8 +7,13 @@
 export function stripHeavyImages(value: any): any {
   if (value == null) return value;
   if (typeof value === 'string') {
-    if (value.startsWith('data:image/') || (value.length > 8000 && /base64/i.test(value))) {
+    if (value.startsWith('data:image/')) {
       return `[image omitted ${Math.round(value.length / 1024)}KB]`;
+    }
+    if (value.length > 8000 && /base64/i.test(value)) {
+      return value.replace(/data:image\/[^;]+;base64,[a-zA-Z0-9+/=]+/ig, (match) => {
+        return `[image omitted ${Math.round(match.length / 1024)}KB]`;
+      });
     }
     return value;
   }

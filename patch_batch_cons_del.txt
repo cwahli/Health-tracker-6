@@ -1,4 +1,0 @@
-      sourceKeys.forEach(k => {
-        delete updatedCustomBiomarkers[k];
-        deletedCustomBiomarkerKeys[k] = Date.now();
-      });

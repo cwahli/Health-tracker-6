@@ -253,7 +253,23 @@ export function resolveRefineWeightGrams(intent: WeightRefineIntent, targetItem:
     return Math.round(intent.weightGrams);
   }
   if (intent.kind === 'whole_pack') {
-    return intent.weightGrams && intent.weightGrams > 0 ? Math.round(intent.weightGrams) : 100;
+    if (intent.weightGrams && intent.weightGrams > 0) return Math.round(intent.weightGrams);
+    const raw = targetItem?.rawNutritionLabel;
+    if (raw) {
+      if (raw.totalPackWeight != null && String(raw.totalPackWeight).trim() !== '') {
+        const tw = Number(String(raw.totalPackWeight).match(/[\d.]+/)?.[0] || 0);
+        if (tw > 0) return Math.round(tw);
+      }
+      const servingsRaw = raw.servingsPerContainer ?? raw.servings ?? raw.numberOfServings;
+      if (servingsRaw != null && String(servingsRaw).trim() !== '') {
+        const servings = Number(String(servingsRaw).match(/[\d.]+/)?.[0] || 0);
+        const sizeGrams = Number(String(raw.servingSize || '').match(/[\d.]+/)?.[0] || 0);
+        if (servings > 0 && sizeGrams > 0) {
+          return Math.round(servings * sizeGrams);
+        }
+      }
+    }
+    return 100;
   }
   if (intent.kind === 'slices' && intent.unitCount != null) {
     return Math.round(intent.unitCount * parseSliceUnitGrams(targetItem));

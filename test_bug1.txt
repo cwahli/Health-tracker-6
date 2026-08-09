@@ -1,8 +1,0 @@
-              const itemLower = (item.canonicalDbName || item.name || "").trim().toLowerCase();
-              const pOrigLower = (preMatch.originalName || "").trim().toLowerCase();
-              const pKwLower = (preMatch.keyword || "").trim().toLowerCase();
-              const hasKeywordMatch = itemLower.includes(pOrigLower) || itemLower.includes(pKwLower) || pOrigLower.includes(itemLower) || pKwLower.includes(itemLower);
-              const stripPunctForTokens = (s: string) => s.replace(/[^a-z0-9\s]/g, ' ');
-              const itemTokens = stripPunctForTokens(itemLower).split(/\s+/).filter((t: string) => t.length > 2);
-              const pTokens = stripPunctForTokens(pOrigLower + " " + pKwLower).split(/\s+/).filter((t: string) => t.length > 2);
-              const hasTokenOverlap = itemTokens.some((t: string) => pTokens.includes(t));
