@@ -1107,6 +1107,20 @@ export default function App() {
                     cleanResult.message ||
                     serverJob.status_message ||
                     'Confirm how much you ate';
+
+                  // Save diagnostic logs to log history page for portion clarify step
+                  const reqId = serverJob.request_id || job.requestId || job.id;
+                  const rawLogs = cleanResult.backendLogs || serverJob.status_message || '';
+                  const logsList = (typeof rawLogs === 'string' && rawLogs.trim().length > 0)
+                    ? rawLogs.split('\n').filter(Boolean).map(line => ({ timestamp: new Date().toISOString(), message: line }))
+                    : [{ timestamp: new Date().toISOString(), message: `[portion_clarify] ${clarifyMsg}` }];
+                  saveAgentRequestLog({
+                    id: reqId,
+                    timestamp: new Date().toISOString(),
+                    summary: `Awaiting Portion Selection: ${job.inputSnapshot?.text || 'Meal Photo'}`,
+                    logs: logsList
+                  });
+
                   // B6c — short status strip while full clarify question stays in the assistant bubble
                   const portionStatusMsg = 'Waiting for portion choice';
                   const userMsgs = (job.messages || []).filter((m) => m.role === 'user');
@@ -1512,7 +1526,14 @@ export default function App() {
       unsubscribeJobStore();
     };
   }, []);
-  const isFoodChatOpen = !!activeJobId && (JobStore.getJob(activeJobId)?.kind === 'food_log' || JobStore.getJob(activeJobId)?.kind === 'food_compare');
+  const isFoodChatOpen =
+    !!activeJobId &&
+    (
+      JobStore.getJob(activeJobId)?.kind === 'food_log' ||
+      JobStore.getJob(activeJobId)?.kind === 'food_compare' ||
+      JobStore.getJob(activeJobId)?.kind === 'food' ||
+      !JobStore.getJob(activeJobId)?.kind
+    );
   const setIsFoodChatOpen = (isOpen: boolean) => {
     if (!isOpen) {
       setActiveJobId(null);

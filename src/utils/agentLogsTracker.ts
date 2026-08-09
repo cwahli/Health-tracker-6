@@ -28,7 +28,32 @@ export const saveAgentRequestLog = (requestLog: AgentRequestLog) => {
   
   const existingIndex = existing.findIndex(r => r.id === sanitized.id);
   if (existingIndex !== -1) {
-    existing[existingIndex] = sanitized;
+    const oldLogs = existing[existingIndex].logs || [];
+    const newLogs = sanitized.logs || [];
+    const mergedLogs = [...oldLogs];
+    
+    for (const log of newLogs) {
+      if (!oldLogs.some(ol => ol.message === log.message && ol.timestamp === log.timestamp)) {
+        mergedLogs.push(log);
+      }
+    }
+    
+    // We want to keep the original summary if the new summary is "Awaiting Portion Selection" and we have a better one.
+    // Actually, if we just keep the new summary it's fine, but wait: when phase 2 finishes, the summary is "{"3":100}". We want the original meal name or "Analyze this meal photo."
+    // Let's prefer the old summary if the new summary is just a JSON string or short.
+    let finalSummary = sanitized.summary;
+    if (finalSummary.startsWith('{') || finalSummary.startsWith('Awaiting Portion')) {
+       finalSummary = existing[existingIndex].summary;
+       if (sanitized.summary.startsWith('Awaiting')) {
+         finalSummary = finalSummary + ' (Awaiting Portion)';
+       }
+    }
+
+    existing[existingIndex] = {
+      ...sanitized,
+      summary: finalSummary,
+      logs: mergedLogs
+    };
   } else {
     existing.unshift(sanitized);
   }

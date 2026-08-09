@@ -4,7 +4,7 @@
  */
 import React, { useEffect, useState, useCallback } from 'react';
 import { createPortal } from 'react-dom';
-import { Camera, X, Plus, Trash2, Bug, Loader, Check, ImagePlus, CheckCircle2 } from 'lucide-react';
+import { Camera, X, Plus, Trash2, Bug, Loader, Check, ImagePlus, CheckCircle2, Sparkles } from 'lucide-react';
 import {
   isBugSnapshotEnabled,
   setBugSnapshotEnabled,
@@ -74,8 +74,6 @@ async function capturePageScreenshot(): Promise<string | null> {
   if (typeof window === 'undefined' || typeof document === 'undefined') return null;
 
   // 1. Native Screen Capture API (getDisplayMedia) — pixel-perfect, no CSS parsing issues.
-  //    Works with oklch(), CSS variables, WebGL canvases, etc.
-  //    Note: requires a user gesture and the browser will show a capture picker.
   try {
     const mediaDevices = navigator.mediaDevices as any;
     if (mediaDevices?.getDisplayMedia) {
@@ -106,18 +104,31 @@ async function capturePageScreenshot(): Promise<string | null> {
     console.warn(`${BUG_SNAPSHOT_LOG} getDisplayMedia capture failed, trying html-to-image fallback`, err);
   }
 
-  // 2. html-to-image fallback (modern CSS supported but may fail on some oklch builds)
+  // 2. html-to-image fallback with window scroll translation for mobile/scrolled viewports
   try {
     const { toJpeg } = await import('html-to-image');
+    const scrollY = window.scrollY || document.documentElement.scrollTop || 0;
+    const scrollX = window.scrollX || document.documentElement.scrollLeft || 0;
+    const width = window.innerWidth;
+    const height = window.innerHeight;
+
     const dataUrl = await toJpeg(document.body, {
       quality: 0.72,
       pixelRatio: 1,
       cacheBust: true,
       skipFonts: true,
+      width,
+      height,
+      style: {
+        transform: `translate(-${scrollX}px, -${scrollY}px)`,
+        transformOrigin: 'top left',
+      },
       filter: (node) => {
         if (
           node instanceof HTMLElement &&
-          (node.id === 'bug-snapshot-fab' || node.classList?.contains('bug-snapshot-ignore'))
+          (node.id === 'bug-snapshot-fab' ||
+            node.classList?.contains('bug-snapshot-ignore') ||
+            node.classList?.contains('bug-modal'))
         ) {
           return false;
         }
@@ -131,7 +142,7 @@ async function capturePageScreenshot(): Promise<string | null> {
     console.warn(`${BUG_SNAPSHOT_LOG} html-to-image capture failed`, err);
   }
 
-  // 3. Canvas-based fallback — captures visible text-free background (no DOM rendering needed)
+  // 3. Canvas-based fallback
   try {
     const canvas = document.createElement('canvas');
     canvas.width = window.innerWidth;
@@ -142,7 +153,7 @@ async function capturePageScreenshot(): Promise<string | null> {
       ctx.fillRect(0, 0, canvas.width, canvas.height);
       ctx.fillStyle = '#ffffff';
       ctx.font = '18px system-ui, sans-serif';
-      ctx.fillText('[Screenshot not available — CSS color space incompatibility]', 24, 48);
+      ctx.fillText('[Screenshot viewport capture fallback]', 24, 48);
       ctx.font = '13px system-ui, sans-serif';
       ctx.fillStyle = '#94a3b8';
       ctx.fillText(`URL: ${window.location.href}`, 24, 80);
@@ -183,6 +194,16 @@ export default function BugSnapshotFab({
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [checklist, setChecklist] = useState<string>('');
   const [lastTriageJobId, setLastTriageJobId] = useState<string | null>(null);
+
+  // Requirement 7: User-controlled sharing checkboxes
+  const [sendChecklist, setSendChecklist] = useState({
+    a11y: true,
+    overview: true,
+    sessionData: true,
+    photo: true,
+    nutrientCalculation: true,
+    debugJson: true,
+  });
 
   useEffect(() => {
     initBrowserLogRecorder();
@@ -228,12 +249,16 @@ export default function BugSnapshotFab({
     const onPaste = (e: ClipboardEvent) => {
       const items = e.clipboardData?.items;
       if (!items) return;
+      const files: File[] = [];
       for (const item of Array.from(items)) {
         if (item.type.startsWith('image/')) {
-          e.preventDefault();
           const file = item.getAsFile();
-          if (file) addShotFromFile(file);
+          if (file) files.push(file);
         }
+      }
+      if (files.length) {
+        e.preventDefault();
+        addShotsFromFiles(files);
       }
     };
     window.addEventListener('paste', onPaste);
@@ -266,24 +291,46 @@ export default function BugSnapshotFab({
     (t) => normalizeCat(t.category) !== normalizeCat(category) && t.status !== 'fixed'
   );
 
-  const addShotFromFile = async (file: File) => {
-    if (shots.length >= BUG_SNAPSHOT_MAX_SHOTS) return;
+  // Requirement 3: Support adding multiple screenshots at the same time
+  const addShotsFromFiles = async (files: FileList | File[]) => {
+    const fileArray = Array.from(files);
+    if (!fileArray.length) return;
+    const remainingSlots = BUG_SNAPSHOT_MAX_SHOTS - shots.length;
+    if (remainingSlots <= 0) return;
+    const toProcess = fileArray.slice(0, remainingSlots);
+
     try {
-      const dataUrl = await compressImage(file, 1280, 1280, 0.8);
-      const webp = await compressToWebpOrJpeg(dataUrl, 1280, 0.8);
-      setShots((s) => [...s, webp].slice(0, BUG_SNAPSHOT_MAX_SHOTS));
+      const newShots: string[] = [];
+      for (const f of toProcess) {
+        const dataUrl = await compressImage(f, 1280, 1280, 0.8);
+        const webp = await compressToWebpOrJpeg(dataUrl, 1280, 0.8);
+        newShots.push(webp);
+      }
+      setShots((s) => [...s, ...newShots].slice(0, BUG_SNAPSHOT_MAX_SHOTS));
     } catch (e: any) {
-      setError(e?.message || 'Failed to read image');
+      setError(e?.message || 'Failed to read image(s)');
     }
   };
 
-  /** Auto-capture on FAB click before opening the modal dialog */
+  /** Requirement 2: Open modal immediately, then close shortly to get picture and show it again */
   const handleOpenFab = async () => {
     setCategory(getCategoryForTab(activeTab));
     setTagId('');
     setError(null);
     setSuccess(null);
     setCapturing(true);
+
+    // 1. Open modal immediately
+    setOpen(true);
+    loadTags();
+
+    // 2. Wait briefly so user sees modal open
+    await new Promise((r) => setTimeout(r, 150));
+
+    // 3. Briefly close modal to take clean screen capture
+    setOpen(false);
+    await new Promise((r) => setTimeout(r, 100));
+
     try {
       const frame = await capturePageScreenshot();
       if (frame) {
@@ -296,8 +343,8 @@ export default function BugSnapshotFab({
       setShots([]);
     } finally {
       setCapturing(false);
+      // 4. Reopen modal with captured shot
       setOpen(true);
-      loadTags();
     }
   };
 
@@ -771,10 +818,10 @@ export default function BugSnapshotFab({
                     <input
                       type="file"
                       accept="image/*"
+                      multiple
                       className="hidden"
                       onChange={(e) => {
-                        const f = e.target.files?.[0];
-                        if (f) addShotFromFile(f);
+                        if (e.target.files) addShotsFromFiles(e.target.files);
                         e.target.value = '';
                       }}
                     />
@@ -875,6 +922,30 @@ export default function BugSnapshotFab({
                   </select>
                 </div>
 
+                {/* Requirement 5: Selecting bug tag shows previous identified problem */}
+                {tagId && tagId !== 'new_bug' && (() => {
+                  const selectedTag = bugTags.find((t) => t.id === tagId);
+                  if (!selectedTag) return null;
+                  const problems = selectedTag.identified_problems || selectedTag.symptom;
+                  return (
+                    <div className="p-2.5 rounded-xl border border-violet-500/30 bg-violet-950/40 space-y-1 text-xs text-violet-100">
+                      <div className="font-bold text-violet-300 flex items-center gap-1.5">
+                        <Sparkles className="w-3.5 h-3.5 text-violet-400 shrink-0" />
+                        <span>Previously identified problem:</span>
+                      </div>
+                      <div className="text-[11px] text-white/90 leading-relaxed whitespace-pre-wrap max-h-28 overflow-y-auto">
+                        {problems || '(No previous problem recorded for this bug tag)'}
+                      </div>
+                      {selectedTag.whats_still_open && (
+                        <div className="text-[10px] text-amber-200/90 pt-1 border-t border-violet-500/20">
+                          <span className="font-bold text-amber-300">Still open: </span>
+                          {selectedTag.whats_still_open}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
+
                 {tagId === 'new_bug' && (
                   <div className="space-y-1">
                     <label className="font-bold text-amber-300">New bug title *</label>
@@ -898,22 +969,74 @@ export default function BugSnapshotFab({
                   />
                 </div>
 
-                <div className="rounded-xl border border-emerald-500/25 bg-emerald-950/25 p-2.5 space-y-1 text-[11px] text-white/70">
+                {/* Requirements 6 & 7: Cleaned up Capture pack and checkboxes for info sent */}
+                <div className="rounded-xl border border-emerald-500/25 bg-emerald-950/25 p-2.5 space-y-2 text-[11px] text-white/70">
                   <div className="flex items-center gap-1.5 text-emerald-300 font-semibold">
                     <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
-                    <span>Capture pack (a11y default for all agents)</span>
+                    <span>Capture pack data to send to agent</span>
                   </div>
-                  <p className="text-[10px] text-emerald-200/90 font-mono">
-                    {checklist ||
-                      `✓ a11y · domain_pack · shots(${shots.length}) · paste=⌘V · draft=session · auto-triage=${
-                        isBugAutoTriageEnabled() ? 'on' : 'off'
-                      }`}
-                  </p>
-                  <p className="text-[10px] text-white/50 leading-relaxed">
-                    Food or biomarker domain pack + a11y go to every model. Instance stays on R2 if triage fails — retry from Bug Tracker.
-                    Models: {AVAILABLE_LLMS.map((m) => m.name).join(', ')}.
-                    {lastTriageJobId ? ` Last job: ${lastTriageJobId.slice(0, 24)}…` : ''}
-                  </p>
+
+                  <div className="grid grid-cols-2 gap-1.5 text-[10px]">
+                    <label className="flex items-center gap-1.5 text-white/80 cursor-pointer select-none">
+                      <input
+                        type="checkbox"
+                        checked={sendChecklist.a11y}
+                        onChange={(e) => setSendChecklist((s) => ({ ...s, a11y: e.target.checked }))}
+                        className="rounded border-emerald-500/50 text-emerald-500 focus:ring-0 bg-slate-900"
+                      />
+                      <span>Accessibility tree</span>
+                    </label>
+
+                    <label className="flex items-center gap-1.5 text-white/80 cursor-pointer select-none">
+                      <input
+                        type="checkbox"
+                        checked={sendChecklist.overview}
+                        onChange={(e) => setSendChecklist((s) => ({ ...s, overview: e.target.checked }))}
+                        className="rounded border-emerald-500/50 text-emerald-500 focus:ring-0 bg-slate-900"
+                      />
+                      <span>Overview & logs</span>
+                    </label>
+
+                    <label className="flex items-center gap-1.5 text-white/80 cursor-pointer select-none">
+                      <input
+                        type="checkbox"
+                        checked={sendChecklist.sessionData}
+                        onChange={(e) => setSendChecklist((s) => ({ ...s, sessionData: e.target.checked }))}
+                        className="rounded border-emerald-500/50 text-emerald-500 focus:ring-0 bg-slate-900"
+                      />
+                      <span>Session data</span>
+                    </label>
+
+                    <label className="flex items-center gap-1.5 text-white/80 cursor-pointer select-none">
+                      <input
+                        type="checkbox"
+                        checked={sendChecklist.photo}
+                        onChange={(e) => setSendChecklist((s) => ({ ...s, photo: e.target.checked }))}
+                        className="rounded border-emerald-500/50 text-emerald-500 focus:ring-0 bg-slate-900"
+                      />
+                      <span>Screenshots ({shots.length})</span>
+                    </label>
+
+                    <label className="flex items-center gap-1.5 text-white/80 cursor-pointer select-none">
+                      <input
+                        type="checkbox"
+                        checked={sendChecklist.nutrientCalculation}
+                        onChange={(e) => setSendChecklist((s) => ({ ...s, nutrientCalculation: e.target.checked }))}
+                        className="rounded border-emerald-500/50 text-emerald-500 focus:ring-0 bg-slate-900"
+                      />
+                      <span>Nutrient calculation</span>
+                    </label>
+
+                    <label className="flex items-center gap-1.5 text-white/80 cursor-pointer select-none">
+                      <input
+                        type="checkbox"
+                        checked={sendChecklist.debugJson}
+                        onChange={(e) => setSendChecklist((s) => ({ ...s, debugJson: e.target.checked }))}
+                        className="rounded border-emerald-500/50 text-emerald-500 focus:ring-0 bg-slate-900"
+                      />
+                      <span>Debug JSON payload</span>
+                    </label>
+                  </div>
                 </div>
               </div>
 

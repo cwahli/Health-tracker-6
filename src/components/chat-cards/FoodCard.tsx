@@ -984,7 +984,7 @@ export const AgentThoughtBox = ({
     setIsExpanded(!!isLive);
   }, [isLive]);
 
-  const hasScratchpad = !!scoutScratchpad || !!dietitianScratchpad || !!activeStage || !!backendLogs;
+  const hasScratchpad = !!scoutScratchpad || !!dietitianScratchpad || !!activeStage || !!backendLogs || !!globalLiveLogs;
   if (!hasScratchpad && !placeholderStep && !isLive && (!warnings || warnings.length === 0)) return null;
 
   const isImageAnalysis = hasImage ?? (!!scoutScratchpad || (placeholderStep && placeholderStep.toLowerCase().includes("photo")));

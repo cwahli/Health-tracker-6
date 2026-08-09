@@ -14,11 +14,8 @@ vi.mock('idb-keyval', () => {
 
 describe('JobStore', () => {
   beforeEach(() => {
-    // Reset JobStore by deleting all jobs
-    const all = JobStore.getAllJobs();
-    for (const j of all) {
-      JobStore.deleteJob(j.id);
-    }
+    // Reset JobStore completely for isolated test runs
+    JobStore.clearForTests();
   });
 
   it('creates, updates and deletes a job', async () => {

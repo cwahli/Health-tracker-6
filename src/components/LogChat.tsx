@@ -510,7 +510,7 @@ export default function LogChat({
   const [isDebugSendingLogs, setIsDebugSendingLogs] = useState(false);
   const [debugLogsSendStatus, setDebugLogsSendStatus] = useState<'idle' | 'success' | 'error'>('idle');
 
-  const [liveThoughts, setLiveThoughts] = useState<{scout?: string, dietitian?: string, dbSearchLog?: string, activeStage?: string, backendLogs?: string}>({});
+  const [liveThoughts, setLiveThoughts] = useState<{scout?: string, dietitian?: string, dbSearchLog?: string, activeStage?: string, backendLogs?: string, globalLiveLogs?: string}>({});
 
   const safeParseResponse = async (res: Response, fallback: any = {}) => {
     try {
@@ -1418,6 +1418,14 @@ ${logsText}`);
       const job = JobStore.getJob(jobId);
       if (!job) return;
 
+      const remotePhoto =
+        job.photoUrl ||
+        job.result?.photoUrl ||
+        job.result?.clean_result?.photoUrl ||
+        (job.result as any)?.data?.photoUrl ||
+        (job as any).clean_result?.photoUrl ||
+        (job as any).photo_url;
+
       if (job.status === 'succeeded' && type === 'food') {
         const welcome = getWelcomeMessage();
         
@@ -1433,25 +1441,30 @@ ${logsText}`);
           };
         }
 
-        if ((job.inputSnapshot as any)?.hasImage && userMsg.imageUrl === 'loading') {
+        const remotePhoto =
+          job.photoUrl ||
+          job.result?.photoUrl ||
+          job.result?.clean_result?.photoUrl ||
+          (job.result as any)?.data?.photoUrl ||
+          (job as any).clean_result?.photoUrl ||
+          (job as any).photo_url;
+
+        if ((job.inputSnapshot as any)?.hasImage || userMsg.imageUrl === 'loading' || userMsg.imageUrl === 'Image reference preserved' || remotePhoto) {
           try {
             const images = await ImageStore.getImages(jobId);
             if (images && images.length > 0) {
               userMsg.imageUrl = typeof images[0] === 'string' ? images[0] : URL.createObjectURL(images[0] as Blob);
               userMsg.imageUrls = images.map(img => typeof img === 'string' ? img : URL.createObjectURL(img as Blob));
+            } else if (remotePhoto) {
+              userMsg.imageUrl = remotePhoto;
+              userMsg.imageUrls = [remotePhoto];
             }
           } catch (err) {
             console.warn('Failed to load images from ImageStore for LogChat:', err);
-          }
-        } else if (userMsg.imageUrl === 'Image reference preserved') {
-          try {
-            const images = await ImageStore.getImages(jobId);
-            if (images && images.length > 0) {
-              userMsg.imageUrl = typeof images[0] === 'string' ? images[0] : URL.createObjectURL(images[0] as Blob);
-              userMsg.imageUrls = images.map(img => typeof img === 'string' ? img : URL.createObjectURL(img as Blob));
+            if (remotePhoto) {
+              userMsg.imageUrl = remotePhoto;
+              userMsg.imageUrls = [remotePhoto];
             }
-          } catch (err) {
-            console.warn('Failed to restore images for userMsg:', err);
           }
         }
 
@@ -1462,15 +1475,22 @@ ${logsText}`);
           job.messages?.slice().reverse().find((m: any) => m.pendingFoodLog || m.data?.pendingFoodLog)?.pendingFoodLog ||
           job.messages?.slice().reverse().find((m: any) => m.data?.pendingFoodLog)?.data?.pendingFoodLog;
 
-        // Attach images from ImageStore if foodLog lacks them
+        // Attach images from ImageStore or remotePhoto if foodLog lacks them
         try {
           const imgs = await ImageStore.getImages(jobId);
           if (foodLog && imgs?.length) {
             foodLog.imageUrls = imgs.map(img => typeof img === 'string' ? img : URL.createObjectURL(img as Blob));
             foodLog.imageUrl = foodLog.imageUrls[0];
+          } else if (foodLog && remotePhoto) {
+            foodLog.imageUrl = foodLog.imageUrl || remotePhoto;
+            foodLog.imageUrls = foodLog.imageUrls?.length ? foodLog.imageUrls : [remotePhoto];
           }
         } catch (err) {
           console.warn('Failed to load images from ImageStore for LogChat:', err);
+          if (foodLog && remotePhoto) {
+            foodLog.imageUrl = foodLog.imageUrl || remotePhoto;
+            foodLog.imageUrls = foodLog.imageUrls?.length ? foodLog.imageUrls : [remotePhoto];
+          }
         }
 
         const raw = job.result?.raw || job.result || {};
@@ -1520,6 +1540,18 @@ ${logsText}`);
 
       if (job.messages && job.messages.length > 0) {
         const baseMsgs = migrateMessages(job.messages).map((m: any) => {
+          if (m.role === 'user' && typeof m.content === 'string' && m.content.trim().startsWith('{')) {
+            try {
+              const parsed = JSON.parse(m.content);
+              if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
+                const entries = Object.entries(parsed);
+                if (entries.length > 0 && entries.every(([k, v]) => (!isNaN(Number(k)) || typeof k === 'string') && typeof v === 'number')) {
+                  const parts = entries.map(([_, v]) => `${v}g`);
+                  return { ...m, content: `Portion Selection: ${parts.join(', ')}` };
+                }
+              }
+            } catch {}
+          }
           if (m.role === 'assistant' && m.agentType === 'food') {
             const foodLog = m.pendingFoodLog || m.data?.pendingFoodLog || job.result?.pendingFoodLog || job.result?.raw?.data || job.result?.data;
             if (foodLog) {
@@ -1537,46 +1569,86 @@ ${logsText}`);
           return m;
         });
 
-        // job.messages is persisted with real image data stripped down to the literal
-        // string 'Image reference preserved' (see persistMessages in handleSend) to keep
-        // localStorage small. Left as-is, that string gets used directly as an <img src>,
-        // producing a broken image (visible as the "Attached meal" alt text). Reload the
-        // real image bytes from ImageStore and patch them back in before rendering.
-        const needsImageRestore = (job.inputSnapshot as any)?.hasImage && baseMsgs.some((m: any) =>
-          m.imageUrl === 'Image reference preserved' ||
-          (Array.isArray(m.imageUrls) && m.imageUrls.some((u: string) => u === 'Image reference preserved')) ||
-          (m.pendingFoodLog && m.pendingFoodLog.imageUrl === 'Image reference preserved') ||
-          (m.data?.pendingFoodLog && m.data.pendingFoodLog.imageUrl === 'Image reference preserved')
-        );
-        if (needsImageRestore) {
-          try {
-            const realImages = await ImageStore.getImages(jobId);
-            if (realImages && realImages.length > 0) {
-              const realUrls = realImages.map((img: any) => typeof img === 'string' ? img : URL.createObjectURL(img as Blob));
-              baseMsgs.forEach((m: any) => {
-                if (m.imageUrl === 'Image reference preserved') {
-                  m.imageUrl = realUrls[0];
-                }
-                if (Array.isArray(m.imageUrls) && m.imageUrls.some((u: string) => u === 'Image reference preserved')) {
-                  m.imageUrls = realUrls;
-                }
-                if (m.pendingFoodLog && m.pendingFoodLog.imageUrl === 'Image reference preserved') {
+        // Restore image references from ImageStore or remotePhoto
+        const remotePhoto = job.photoUrl || job.result?.photoUrl || (job.result as any)?.clean_result?.photoUrl;
+        try {
+          const realImages = await ImageStore.getImages(jobId);
+          const realUrls = (realImages && realImages.length > 0)
+            ? realImages.map((img: any) => typeof img === 'string' ? img : URL.createObjectURL(img as Blob))
+            : (remotePhoto ? [remotePhoto] : []);
+
+          if (realUrls.length > 0) {
+            baseMsgs.forEach((m: any) => {
+              if (!m.imageUrl || m.imageUrl === 'Image reference preserved' || m.imageUrl === 'loading' || m.imageUrl.startsWith('/_/upload/')) {
+                m.imageUrl = realUrls[0];
+              }
+              if (!m.imageUrls || m.imageUrls.some((u: string) => u === 'Image reference preserved' || u.startsWith('/_/upload/'))) {
+                m.imageUrls = realUrls;
+              }
+              if (m.pendingFoodLog) {
+                if (!m.pendingFoodLog.imageUrl || m.pendingFoodLog.imageUrl === 'Image reference preserved' || m.pendingFoodLog.imageUrl.startsWith('/_/upload/')) {
                   m.pendingFoodLog.imageUrl = realUrls[0];
+                }
+                if (!m.pendingFoodLog.imageUrls || m.pendingFoodLog.imageUrls.some((u: string) => u === 'Image reference preserved' || u.startsWith('/_/upload/'))) {
                   m.pendingFoodLog.imageUrls = realUrls;
                 }
-                if (m.data?.pendingFoodLog && m.data.pendingFoodLog.imageUrl === 'Image reference preserved') {
+              }
+              if (m.data?.pendingFoodLog) {
+                if (!m.data.pendingFoodLog.imageUrl || m.data.pendingFoodLog.imageUrl === 'Image reference preserved' || m.data.pendingFoodLog.imageUrl.startsWith('/_/upload/')) {
                   m.data.pendingFoodLog.imageUrl = realUrls[0];
+                }
+                if (!m.data.pendingFoodLog.imageUrls || m.data.pendingFoodLog.imageUrls.some((u: string) => u === 'Image reference preserved' || u.startsWith('/_/upload/'))) {
                   m.data.pendingFoodLog.imageUrls = realUrls;
                 }
-              });
-            }
-          } catch (err) {
-            console.warn('[loadJobMessages] Failed to restore images from ImageStore for job', jobId, err);
+              }
+            });
           }
+        } catch (err) {
+          console.warn('[loadJobMessages] Failed to restore images from ImageStore for job', jobId, err);
         }
 
         const lastMsg = baseMsgs[baseMsgs.length - 1];
-        if ((job.status === 'queued' || job.status === 'running') && lastMsg?.role === 'user') {
+        if (job.status === 'awaiting_user') {
+          const portionClarify =
+            job.result?.portionClarify ||
+            job.result?.clean_result?.portionClarify ||
+            (job.result as any)?.data?.portionClarify ||
+            (job as any).clean_result?.portionClarify;
+          const promptMsg = portionClarify?.promptMessage || job.statusMessage || 'Please confirm portion size';
+          const scoutItems =
+            job.result?.scoutItems ||
+            job.result?.clean_result?.scoutItems ||
+            (job as any).clean_result?.scoutItems ||
+            [];
+          let assistantClarifyMsg = baseMsgs.find((m: any) => m.role === 'assistant' && (m.data?.portionClarify || m.data?.needsPortionClarify));
+          if (!assistantClarifyMsg) {
+            assistantClarifyMsg = {
+              id: `msg_assistant_clarify_${jobId}`,
+              role: 'assistant',
+              content: promptMsg,
+              timestamp: job.updatedAt || new Date().toISOString(),
+              isLive: false,
+              agentType: type as any,
+              data: {
+                needsPortionClarify: true,
+                portionClarify,
+                scoutItems,
+                photoUrl: job.photoUrl || job.result?.photoUrl || (job.result as any)?.clean_result?.photoUrl,
+                debugUrl: job.debugUrl || job.result?.debugUrl || (job.result as any)?.clean_result?.debugUrl,
+                agentResult: {
+                  scoutItems,
+                  activeStage: 'portion_clarify'
+                }
+              }
+            };
+            baseMsgs.push(assistantClarifyMsg);
+          } else if (assistantClarifyMsg.data) {
+            assistantClarifyMsg.data.portionClarify = assistantClarifyMsg.data.portionClarify || portionClarify;
+            assistantClarifyMsg.data.needsPortionClarify = true;
+            assistantClarifyMsg.data.scoutItems = assistantClarifyMsg.data.scoutItems?.length ? assistantClarifyMsg.data.scoutItems : scoutItems;
+          }
+          setMessages(baseMsgs, false);
+        } else if ((job.status === 'queued' || job.status === 'running') && lastMsg?.role === 'user') {
           const liveMsg: ChatMessage = {
             id: `msg_live_${jobId}`,
             role: 'assistant',
@@ -1610,15 +1682,22 @@ ${logsText}`);
           imageUrl: (job.inputSnapshot as any)?.hasImage ? 'loading' : undefined
         };
 
-        if ((job.inputSnapshot as any)?.hasImage) {
+        if ((job.inputSnapshot as any)?.hasImage || remotePhoto) {
           try {
             const images = await ImageStore.getImages(jobId);
             if (images && images.length > 0) {
               userMsg.imageUrl = typeof images[0] === 'string' ? images[0] : URL.createObjectURL(images[0] as Blob);
               userMsg.imageUrls = images.map(img => typeof img === 'string' ? img : URL.createObjectURL(img as Blob));
+            } else if (remotePhoto) {
+              userMsg.imageUrl = remotePhoto;
+              userMsg.imageUrls = [remotePhoto];
             }
           } catch (err) {
             console.warn('Failed to load images from ImageStore for LogChat:', err);
+            if (remotePhoto) {
+              userMsg.imageUrl = remotePhoto;
+              userMsg.imageUrls = [remotePhoto];
+            }
           }
         }
 
@@ -1630,15 +1709,22 @@ ${logsText}`);
             job.messages?.slice().reverse().find((m: any) => m.pendingFoodLog || m.data?.pendingFoodLog)?.pendingFoodLog ||
             job.messages?.slice().reverse().find((m: any) => m.data?.pendingFoodLog)?.data?.pendingFoodLog;
 
-          // Attach images from ImageStore if foodLog lacks them
+          // Attach images from ImageStore or remotePhoto if foodLog lacks them
           try {
             const imgs = await ImageStore.getImages(jobId);
             if (foodLog && imgs?.length) {
               foodLog.imageUrls = imgs.map(img => typeof img === 'string' ? img : URL.createObjectURL(img as Blob));
               foodLog.imageUrl = foodLog.imageUrls[0];
+            } else if (foodLog && remotePhoto) {
+              foodLog.imageUrl = foodLog.imageUrl || remotePhoto;
+              foodLog.imageUrls = foodLog.imageUrls?.length ? foodLog.imageUrls : [remotePhoto];
             }
           } catch (err) {
             console.warn('Failed to load images from ImageStore for LogChat:', err);
+            if (foodLog && remotePhoto) {
+              foodLog.imageUrl = foodLog.imageUrl || remotePhoto;
+              foodLog.imageUrls = foodLog.imageUrls?.length ? foodLog.imageUrls : [remotePhoto];
+            }
           }
 
           const raw = job.result?.raw || job.result || {};
@@ -1675,6 +1761,38 @@ ${logsText}`);
             ];
           }
           setMessages([welcome, userMsg, assistantMsg], false);
+        } else if (job.status === 'awaiting_user') {
+          const portionClarify =
+            job.result?.portionClarify ||
+            job.result?.clean_result?.portionClarify ||
+            (job.result as any)?.data?.portionClarify ||
+            (job as any).clean_result?.portionClarify;
+          const promptMsg = portionClarify?.promptMessage || job.statusMessage || 'Please confirm portion size';
+          const scoutItems =
+            job.result?.scoutItems ||
+            job.result?.clean_result?.scoutItems ||
+            (job as any).clean_result?.scoutItems ||
+            [];
+          const assistantClarifyMsg: ChatMessage = {
+            id: `msg_assistant_clarify_${jobId}`,
+            role: 'assistant',
+            content: promptMsg,
+            timestamp: job.updatedAt || new Date().toISOString(),
+            isLive: false,
+            agentType: type as any,
+            data: {
+              needsPortionClarify: true,
+              portionClarify,
+              scoutItems,
+              photoUrl: job.photoUrl || job.result?.photoUrl || (job.result as any)?.clean_result?.photoUrl,
+              debugUrl: job.debugUrl || job.result?.debugUrl || (job.result as any)?.clean_result?.debugUrl,
+              agentResult: {
+                scoutItems,
+                activeStage: 'portion_clarify'
+              }
+            }
+          };
+          setMessages([welcome, userMsg, assistantClarifyMsg], false);
         } else if (job.status === 'failed') {
           const assistantMsg: ChatMessage = {
             id: `msg_assistant_${jobId}`,
@@ -2294,9 +2412,9 @@ ${logsText}`);
         }
 
         // Submission mode:
-        // If job already succeeded or has assistant responses, this submission is an edit
+        // If job already succeeded or has a pending food log, this submission is an edit
         let submissionMode: 'review' | 'compare' | 'edit' = mappedMode;
-        const hasPriorResult = job && (job.status === 'succeeded' || job.result || (job.messages && job.messages.some(m => m.role === 'assistant')));
+        const hasPriorResult = job && (job.status === 'succeeded' || job.result?.pendingFoodLog || job.result?.data?.pendingFoodLog || (job.messages && job.messages.some(m => m.data?.pendingFoodLog || m.pendingFoodLog)));
         if (hasPriorResult) {
           submissionMode = 'edit';
         } else if (family === 'D') {
@@ -2310,8 +2428,48 @@ ${logsText}`);
           await ImageStore.putImages(currentJobId, finalImages);
         }
 
+        const existingMsgs = (job?.messages && job.messages.length > 0)
+          ? job.messages
+          : [getWelcomeMessage()];
+
+        const lastScoutMsgForJob = [...existingMsgs].reverse().find(m => 
+          (m.data?.scoutItems && m.data.scoutItems.length > 0) || 
+          (m.data?.agentResult?.scoutItems && m.data.agentResult.scoutItems.length > 0)
+        );
+        const jobScoutItems = currentJobId ? (JobStore.getJob(currentJobId)?.result?.scoutItems || JobStore.getJob(currentJobId)?.result?.clean_result?.scoutItems) : undefined;
+        const scoutItemsForJob = lastScoutMsgForJob?.data?.scoutItems || 
+          lastScoutMsgForJob?.data?.agentResult?.scoutItems || 
+          jobScoutItems ||
+          activeScoutItemsFallback || [];
+
+        let userContent = textToSend;
+        if (extraOptions?.portionChoices && typeof extraOptions.portionChoices === 'object') {
+          try {
+            const choices = extraOptions.portionChoices;
+            const items = extraOptions.scoutItems || scoutItemsForJob || [];
+            const parts: string[] = [];
+            Object.entries(choices).forEach(([key, value]) => {
+              const idx = Number(key);
+              const matchedItem = !isNaN(idx) ? items[idx] : items.find((i: any) => i.id === key || i.name === key);
+              const itemName = matchedItem?.name || matchedItem?.label || matchedItem?.displayName || matchedItem?.originalName || matchedItem?.description;
+              if (itemName) {
+                parts.push(`${itemName}: ${value}g`);
+              } else {
+                parts.push(`${value}g`);
+              }
+            });
+            if (parts.length > 0) {
+              userContent = `Portion Selection: ${parts.join(', ')}`;
+            } else {
+              userContent = `Portion Selection: ${textToSend}`;
+            }
+          } catch (e) {
+            userContent = `Portion Selection: ${textToSend}`;
+          }
+        }
+
         const inputSnapshot = {
-          text: textToSend,
+          text: userContent,
           imageRefs: [],
           hasImage: finalImages.length > 0,
           mode: submissionMode
@@ -2338,14 +2496,11 @@ ${logsText}`);
         const userMsg: ChatMessage = {
           id: `msg_user_${Date.now()}`,
           role: 'user',
-          content: textToSend,
+          content: userContent,
           timestamp: new Date().toISOString(),
           imageUrl: userMsgImageUrl
         };
 
-        const existingMsgs = (job?.messages && job.messages.length > 0)
-          ? job.messages
-          : [getWelcomeMessage()];
         const updatedMessages = [...existingMsgs, userMsg];
 
         // Strip big base64 strings and nested circular references from messages stored in JobStore to prevent localStorage bloat/failure
@@ -2469,7 +2624,7 @@ ${logsText}`);
           job?.result?.data || 
           [...existingMsgs].reverse().find(m => m.data?.pendingFoodLog || m.pendingFoodLog)?.data?.pendingFoodLog || 
           [...existingMsgs].reverse().find(m => m.data?.pendingFoodLog || m.pendingFoodLog)?.pendingFoodLog ||
-          (foodLogs && foodLogs.length > 0 ? foodLogs[foodLogs.length - 1] : null);
+          (!extraOptions?.portionChoices && foodLogs && foodLogs.length > 0 ? foodLogs[foodLogs.length - 1] : null);
         let prunedMealForJob = null;
         if (lastFoodLogForJob) {
           try {
@@ -2485,14 +2640,6 @@ ${logsText}`);
             prunedMealForJob = lastFoodLogForJob;
           }
         }
-
-        const lastScoutMsgForJob = [...existingMsgs].reverse().find(m => 
-          (m.data?.scoutItems && m.data.scoutItems.length > 0) || 
-          (m.data?.agentResult?.scoutItems && m.data.agentResult.scoutItems.length > 0)
-        );
-        const scoutItemsForJob = lastScoutMsgForJob?.data?.scoutItems || 
-          lastScoutMsgForJob?.data?.agentResult?.scoutItems || 
-          activeScoutItemsFallback || [];
 
         getImagesAsBase64(finalImages).then((stagedImagesForSubmit) => {
           fetch('/api/jobs/submit', {
@@ -2516,7 +2663,8 @@ ${logsText}`);
               foodLogs: [],
               userSelectedMode: submissionMode,
               activeScoutItems: scoutItemsForJob,
-              portionChoices: extraOptions?.portionChoices
+              portionChoices: extraOptions?.portionChoices,
+              skipScout: extraOptions?.skipScout || !!extraOptions?.portionChoices
             })
           })
           .then(async (res) => {
@@ -2529,7 +2677,8 @@ ${logsText}`);
           })
           .then(data => {
             console.log('[LogChat] Job successfully submitted to server:', data);
-            JobStore.updateJob(currentJobId, { status: 'running', statusMessage: 'Analyzing on server...' });
+            JobStore.updateJob(currentJobId, { status: 'queued', statusMessage: 'Analyzing on server...' });
+            JobQueueRunner.wake();
           })
           .catch(err => {
             console.error('[LogChat] Server submit failed:', err);
@@ -5360,7 +5509,7 @@ ${JSON.stringify(profile, null, 2)}`);
                         <div ref={msg.isLive ? liveThoughtRef : undefined}>
 
                           <AgentThoughtBox
-                            globalLiveLogs={(msg.agentType === 'agent1' || msg.agentType === 'medical_extract') ? undefined : (msg.isLive ? globalLiveLogs : msg.data?.agentResult?.globalLiveLogs)}
+                            globalLiveLogs={(msg.agentType === 'agent1' || msg.agentType === 'medical_extract') ? undefined : (msg.isLive ? (globalLiveLogs || liveThoughts.globalLiveLogs || liveThoughts.backendLogs || (jobId ? JobStore.getJob(jobId)?.liveThoughts?.globalLiveLogs || JobStore.getJob(jobId)?.liveThoughts?.backendLogs : undefined)) : (msg.data?.agentResult?.globalLiveLogs || msg.data?.agentResult?.backendLogs || (jobId ? JobStore.getJob(jobId)?.liveThoughts?.globalLiveLogs || JobStore.getJob(jobId)?.liveThoughts?.backendLogs || JobStore.getJob(jobId)?.result?.backendLogs : undefined)))}
                             scoutScratchpad={msg.isLive ? (liveThoughts.scout || msg.data?.agentResult?.scoutScratchpad) : msg.data?.agentResult?.scoutScratchpad}
                             dietitianScratchpad={msg.isLive ? (liveThoughts.dietitian || msg.data?.agentResult?.dietitianScratchpad) : msg.data?.agentResult?.dietitianScratchpad}
                             isLive={msg.isLive}
@@ -5379,7 +5528,7 @@ ${JSON.stringify(profile, null, 2)}`);
                           />
                         <Renderer
                           msg={msg}
-                          globalLiveLogs={msg.isLive ? globalLiveLogs : msg.data?.agentResult?.globalLiveLogs}
+                          globalLiveLogs={msg.isLive ? (globalLiveLogs || liveThoughts.globalLiveLogs || liveThoughts.backendLogs) : (msg.data?.agentResult?.globalLiveLogs || msg.data?.agentResult?.backendLogs || (jobId ? JobStore.getJob(jobId)?.liveThoughts?.globalLiveLogs || JobStore.getJob(jobId)?.liveThoughts?.backendLogs || JobStore.getJob(jobId)?.result?.backendLogs : undefined))}
                           idx={idx}
                           messages={messages}
                           report={report}
@@ -5429,7 +5578,7 @@ ${JSON.stringify(profile, null, 2)}`);
                             portionClarify={msg.data.portionClarify}
                             onConfirm={(choices: any) => {
                               if (typeof handleSend === 'function') {
-                                handleSend(JSON.stringify(choices), [], { portionChoices: choices });
+                                handleSend(JSON.stringify(choices), [], { portionChoices: choices, skipScout: true });
                               }
                             }}
                           />

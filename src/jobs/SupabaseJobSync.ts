@@ -26,6 +26,32 @@ export async function hydrateUserJobs(userId: string = 'anonymous'): Promise<voi
       }
 
       if (!existing) {
+        const cleanResObj = cleanRes || {};
+        let initialMessages: any[] = [];
+        if (row.status === 'awaiting_user' && cleanResObj) {
+          const clarifyMsg = cleanResObj.message || row.status_message || 'Confirm how much you ate';
+          initialMessages = [{
+            id: `msg_assistant_clarify_${row.id}`,
+            role: 'assistant',
+            content: clarifyMsg,
+            timestamp: new Date().toISOString(),
+            isLive: false,
+            agentType: 'food',
+            data: {
+              needsPortionClarify: true,
+              portionClarify: cleanResObj.portionClarify,
+              scoutItems: cleanResObj.scoutItems || [],
+              photoUrl: row.photo_url || cleanResObj.photoUrl,
+              debugUrl: row.debug_url || cleanResObj.debugUrl,
+              agentResult: {
+                backendLogs: cleanResObj.backendLogs || '',
+                globalLiveLogs: cleanResObj.backendLogs || '',
+                scoutItems: cleanResObj.scoutItems || [],
+                activeStage: 'portion_clarify',
+              },
+            },
+          }];
+        }
         JobStore.createJob({
           id: row.id,
           kind: row.kind || 'food_log',
@@ -33,17 +59,56 @@ export async function hydrateUserJobs(userId: string = 'anonymous'): Promise<voi
           status: row.status,
           progressPercent: row.progress_percent || 0,
           statusMessage: row.status_message || '',
-          messages: [],
+          messages: initialMessages,
           result: cleanRes,
+          photoUrl: photoUrl || row.photo_url || cleanRes?.photoUrl,
+          debugUrl: debugUrl || row.debug_url || cleanRes?.debugUrl,
+          inputSnapshot: {
+            text: row.raw_text || cleanRes?.raw_text || '',
+            hasImage: !!(photoUrl || row.photo_url || cleanRes?.photoUrl)
+          },
           createdAt: row.created_at ? new Date(row.created_at).toISOString() : new Date().toISOString(),
         } as any);
       } else {
-        JobStore.updateJob(row.id, {
+        const updatePayload: any = {
           status: row.status,
           progressPercent: row.progress_percent,
           statusMessage: row.status_message,
-          result: cleanRes || existing.result
-        });
+          result: cleanRes || existing.result,
+          photoUrl: photoUrl || row.photo_url || cleanRes?.photoUrl || existing.photoUrl,
+          debugUrl: debugUrl || row.debug_url || cleanRes?.debugUrl || existing.debugUrl
+        };
+        if (photoUrl || row.photo_url || cleanRes?.photoUrl) {
+          updatePayload.inputSnapshot = {
+            ...(existing.inputSnapshot || {}),
+            hasImage: true
+          };
+        }
+        if (row.status === 'awaiting_user' && cleanRes && (!existing.messages || existing.messages.length === 0)) {
+          const clarifyMsg = cleanRes.message || row.status_message || 'Confirm how much you ate';
+          updatePayload.messages = [{
+            id: `msg_assistant_clarify_${row.id}`,
+            role: 'assistant',
+            content: clarifyMsg,
+            timestamp: new Date().toISOString(),
+            isLive: false,
+            agentType: 'food',
+            data: {
+              needsPortionClarify: true,
+              portionClarify: cleanRes.portionClarify,
+              scoutItems: cleanRes.scoutItems || [],
+              photoUrl: row.photo_url || cleanRes.photoUrl,
+              debugUrl: row.debug_url || cleanRes.debugUrl,
+              agentResult: {
+                backendLogs: cleanRes.backendLogs || '',
+                globalLiveLogs: cleanRes.backendLogs || '',
+                scoutItems: cleanRes.scoutItems || [],
+                activeStage: 'portion_clarify',
+              },
+            },
+          }];
+        }
+        JobStore.updateJob(row.id, updatePayload);
       }
     }
   } catch (e) {
@@ -105,6 +170,44 @@ export function initSupabaseJobSync(userId?: string): () => void {
           };
         }
 
+        if (row.status === 'awaiting_user' && row.clean_result) {
+          const clarifyMsg = row.clean_result.message || row.status_message || 'Confirm how much you ate';
+          updatedFields.messages = [{
+            id: `msg_assistant_clarify_${row.id}`,
+            role: 'assistant',
+            content: clarifyMsg,
+            timestamp: new Date().toISOString(),
+            isLive: false,
+            agentType: 'food',
+            data: {
+              needsPortionClarify: true,
+              portionClarify: row.clean_result.portionClarify,
+              scoutItems: row.clean_result.scoutItems || [],
+              photoUrl: row.photo_url || row.clean_result.photoUrl,
+              debugUrl: row.debug_url || row.clean_result.debugUrl,
+              agentResult: {
+                backendLogs: row.clean_result.backendLogs || '',
+                globalLiveLogs: row.clean_result.backendLogs || '',
+                scoutItems: row.clean_result.scoutItems || [],
+                activeStage: 'portion_clarify',
+              },
+            },
+          }];
+        }
+
+        const rowPhotoUrl = row.photo_url || row.clean_result?.photoUrl;
+        const rowDebugUrl = row.debug_url || row.clean_result?.debugUrl;
+        if (rowPhotoUrl) {
+          updatedFields.photoUrl = rowPhotoUrl;
+          updatedFields.inputSnapshot = {
+            ...(existingJob?.inputSnapshot || {}),
+            hasImage: true
+          } as any;
+        }
+        if (rowDebugUrl) {
+          updatedFields.debugUrl = rowDebugUrl;
+        }
+
         if (existingJob) {
           JobStore.updateJob(row.id, updatedFields);
         } else {
@@ -115,8 +218,14 @@ export function initSupabaseJobSync(userId?: string): () => void {
             status: row.status,
             progressPercent: row.progress_percent || 0,
             statusMessage: row.status_message || '',
-            messages: [],
+            messages: updatedFields.messages || [],
             result: row.clean_result || undefined,
+            photoUrl: rowPhotoUrl,
+            debugUrl: rowDebugUrl,
+            inputSnapshot: {
+              text: row.raw_text || row.clean_result?.raw_text || '',
+              hasImage: !!rowPhotoUrl
+            },
             createdAt: row.created_at ? new Date(row.created_at).toISOString() : new Date().toISOString(),
           } as any);
         }
@@ -172,7 +281,8 @@ export async function deleteJobFromBackend(
 ): Promise<void> {
   if (!jobId) return;
   try {
-    const res = await fetch('/api/jobs/delete', {
+    const baseUrl = typeof window !== 'undefined' ? '' : 'http://localhost:3000';
+    const res = await fetch(`${baseUrl}/api/jobs/delete`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ jobId, userId }),

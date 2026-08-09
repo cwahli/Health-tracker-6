@@ -82,13 +82,13 @@ export function PortionClarifyCard({ portionClarify, onConfirm, disabled }: Prop
                 type="button"
                 disabled={disabled}
                 onClick={() => setCustomOpen((p) => ({ ...p, [key]: true }))}
-                className={`px-3 py-1.5 rounded-xl text-xs font-semibold border cursor-pointer ${
+                className={`px-3 py-1.5 rounded-xl text-xs font-semibold border transition-all cursor-pointer whitespace-nowrap ${
                   customOpen[key]
-                    ? 'bg-indigo-600 text-white border-indigo-600'
-                    : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-700'
+                    ? 'bg-indigo-600 text-white border-indigo-600 shadow-sm'
+                    : 'bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-200 border-slate-200 dark:border-slate-700 hover:border-indigo-400'
                 }`}
               >
-                Custom g…
+                Custom (g)
               </button>
             </div>
             {customOpen[key] && (
@@ -104,9 +104,9 @@ export function PortionClarifyCard({ portionClarify, onConfirm, disabled }: Prop
                     const n = parseFloat(e.target.value);
                     if (n > 0) setSelected((p) => ({ ...p, [key]: Math.round(n) }));
                   }}
-                  className="w-28 px-2 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-sm"
+                  className="w-28 px-2 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-white placeholder-slate-400 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
                 />
-                <span className="text-xs text-slate-500">g</span>
+                <span className="text-xs text-slate-500 dark:text-slate-400 font-medium">g</span>
               </div>
             )}
           </div>

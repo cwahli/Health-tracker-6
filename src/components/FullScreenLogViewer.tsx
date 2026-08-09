@@ -1231,7 +1231,16 @@ export default function FullScreenLogViewer({
                     if (req.logs) {
                       for (let i = req.logs.length - 1; i >= 0; i--) {
                         const msg = req.logs[i].message || '';
-                        if (msg.toLowerCase().includes('error') || msg.toLowerCase().includes('failed')) hasError = true;
+                        const lowerMsg = msg.toLowerCase();
+                        if (
+                          lowerMsg.includes('fatal error') ||
+                          lowerMsg.includes('uncaught error') ||
+                          lowerMsg.includes('status: failed') ||
+                          lowerMsg.includes('request failed') ||
+                          lowerMsg.includes('500 internal server error')
+                        ) {
+                          hasError = true;
+                        }
                         if (!potentialDesc) {
                            // Enhanced extraction regex
                            const analyzeMatch = msg.match(/analyzed the food: \*\*([^*]+)\*\*/i) || 
@@ -1240,7 +1249,7 @@ export default function FullScreenLogViewer({
                            if (analyzeMatch) potentialDesc = analyzeMatch[1].trim();
                            else if (msg.includes('I have extracted the biomarkers')) potentialDesc = "Biomarkers Extracted";
                            else if (msg.includes('diagnostic findings')) potentialDesc = "Diagnostic Results";
-                           else if (msg.toLowerCase().includes('health_coach') || msg.toLowerCase().includes('health_baseline') || msg.toLowerCase().includes('health baseline')) {
+                           else if (lowerMsg.includes('health_coach') || lowerMsg.includes('health_baseline') || lowerMsg.includes('health baseline')) {
                              const targetsMatch = msg.match(/(\d+)\s*top\s*targets/i);
                              const bioMatch = msg.match(/(\d+)b\b/i);
                              if (targetsMatch && bioMatch) {
@@ -1253,7 +1262,7 @@ export default function FullScreenLogViewer({
                       }
                     }
                     
-                    let finalDesc = potentialDesc || (hasError ? 'Failed processing' : (req.summary || 'Processing Request'));
+                    let finalDesc = req.summary || potentialDesc || (hasError ? 'Failed processing' : 'Processing Request');
                     if (req.summary && (req.summary.includes('top targets') || req.summary.includes('b'))) {
                       finalDesc = req.summary;
                     }

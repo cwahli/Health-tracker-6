@@ -817,199 +817,9 @@ async function searchOnlineWebNutrition(
       addDebugLog(`[Brand Menu Lookup Error] ${brandErr?.message || brandErr}`);
     }
     
-    // DuckDuckGo Official Instant Answer JSON API (100% Free, Official REST API - Never Blocked)
-    try {
-      const ddgUrl = `https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_html=1&skip_disambig=1`;
-      const ddgApiRes = await fetch(ddgUrl, { signal: AbortSignal.timeout(4000) });
-      if (ddgApiRes.ok) {
-        const ddgData = await ddgApiRes.json() as any;
-        const abstractText = ddgData.AbstractText || ddgData.Heading || "";
-        if (abstractText && abstractText.length > 10) {
-          const calMatch = abstractText.match(/(\d{2,4})\s*(?:kcal|calories)/i);
-          const proteinMatch = abstractText.match(/(\d+(?:\.\d+)?)\s*g\s*protein/i);
-          const fatMatch = abstractText.match(/(\d+(?:\.\d+)?)\s*g\s*(?:total\s*)?fat/i);
-          const carbsMatch = abstractText.match(/(\d+(?:\.\d+)?)\s*g\s*(?:of\s*)?carb(?:ohydrate)?s?/i);
-          const satFatMatch = abstractText.match(/(\d+(?:\.\d+)?)\s*g\s*sat(?:urated)?\s*fat/i);
-          const sodiumMatch = abstractText.match(/(\d+(?:\.\d+)?)\s*(?:mg|g)\s*sodium/i);
-
-          if (calMatch || proteinMatch || fatMatch || carbsMatch) {
-            addDebugLog(`[DuckDuckGo Official API] Found official JSON match for "${query}" -> ${calMatch ? calMatch[1] : 'N/A'} kcal`);
-            return [{
-              query,
-              name: query,
-              calories: calMatch ? calMatch[1] : undefined,
-              protein: proteinMatch ? parseFloat(proteinMatch[1]) : undefined,
-              fat: fatMatch ? parseFloat(fatMatch[1]) : undefined,
-              carbohydrates: carbsMatch ? parseFloat(carbsMatch[1]) : undefined,
-              saturatedFat: satFatMatch ? parseFloat(satFatMatch[1]) : undefined,
-              sodium: sodiumMatch ? parseFloat(sodiumMatch[1]) : undefined,
-              ingredients: abstractText.substring(0, 300),
-              sourceUrl: brandMenuUrl || ddgData.AbstractURL || undefined,
-              source: 'web_search',
-              snippet: abstractText
-            }];
-          }
-        }
-      }
-    } catch (ddgErr: any) {
-      addDebugLog(`[DuckDuckGo Official API] Failed for "${query}": ${ddgErr?.name || ''} ${ddgErr?.message || ddgErr}`);
-    }
-
-    // DuckDuckGo Lite & HTML Multi-Selector Search Engine (Max 1 call per request limit)
-    try {
-      if (ctx.ddgCallCount >= 1 || ctx.ddgBlocked) {
-        addDebugLog(`[DuckDuckGo Lite Engine] Skipped fetch for "${query}" (max 1 DDG call limit reached or blocked).`);
-        return [];
-      }
-      ctx.ddgCallCount++;
-
-      const searchBody = `q=${encodeURIComponent(query + " nutrition calories")}&kl=us-en`;
-      const ddgLiteRes = await fetch("https://lite.duckduckgo.com/lite/", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/x-www-form-urlencoded",
-          "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-          "Referer": "https://lite.duckduckgo.com/",
-          "Accept-Language": "en-US,en;q=0.9"
-        },
-        body: searchBody,
-        signal: AbortSignal.timeout(5000)
-      });
-
-      if (ddgLiteRes.status === 202) {
-        isBlockedByBotProtection = true;
-        ctx.ddgBlocked = true;
-        addDebugLog(`[DuckDuckGo Lite Engine] BLOCKED by DuckDuckGo anti-bot system (HTTP 202 CAPTCHA challenge) for "${query}".`);
-      } else if (ddgLiteRes.ok) {
-        const html = await ddgLiteRes.text();
-        if (html.includes('anomaly.js') || html.includes('challenge-form') || html.includes('botnet')) {
-          isBlockedByBotProtection = true;
-          ctx.ddgBlocked = true;
-          addDebugLog(`[DuckDuckGo Lite Engine] BLOCKED by DuckDuckGo anomaly challenge script for "${query}".`);
-        } else {
-          const $ = cheerio.load(html);
-          
-          let foundSnippet = "";
-          let foundLink = "";
-
-          // Try multiple CSS selector strategies for DuckDuckGo Lite table structure
-          $('.result-snippet, td.result-snippet, td.result-snippet-text, .result__snippet, .result__body').each((i, el) => {
-            const text = $(el).text().trim();
-            if (text && text.length > 15 && !foundSnippet) {
-              foundSnippet = text;
-              const href = $(el).closest('tr').prev('tr').find('a').attr('href') || $('a.result-link, a.result__a').first().attr('href');
-              if (href) foundLink = href;
-            }
-          });
-
-          // Fallback text aggregation if specific snippet classes are absent
-          if (!foundSnippet) {
-            $('td').each((i, el) => {
-              const text = $(el).text().trim();
-              if (text.length > 30 && (text.toLowerCase().includes('kcal') || text.toLowerCase().includes('calorie') || text.toLowerCase().includes('protein') || text.toLowerCase().includes('fat') || text.toLowerCase().includes('g'))) {
-                if (!foundSnippet) foundSnippet = text;
-              }
-            });
-          }
-
-          if (foundSnippet) {
-            const calMatch = foundSnippet.match(/(\d{2,4})\s*(?:kcal|calories)/i);
-            const proteinMatch = foundSnippet.match(/(\d+(?:\.\d+)?)\s*g\s*protein/i);
-            const fatMatch = foundSnippet.match(/(\d+(?:\.\d+)?)\s*g\s*(?:total\s*)?fat/i);
-            const carbsMatch = foundSnippet.match(/(\d+(?:\.\d+)?)\s*g\s*(?:of\s*)?carb(?:ohydrate)?s?/i);
-            const satFatMatch = foundSnippet.match(/(\d+(?:\.\d+)?)\s*g\s*sat(?:urated)?\s*fat/i);
-            const sodiumMatch = foundSnippet.match(/(\d+(?:\.\d+)?)\s*(?:mg|g)\s*sodium/i);
-
-            addDebugLog(`[DuckDuckGo Lite Engine] Extracted web snippet for "${query}" -> "${foundSnippet.substring(0, 80)}..."`);
-            return [{
-              query,
-              name: query,
-              calories: calMatch ? calMatch[1] : undefined,
-              protein: proteinMatch ? parseFloat(proteinMatch[1]) : undefined,
-              fat: fatMatch ? parseFloat(fatMatch[1]) : undefined,
-              carbohydrates: carbsMatch ? parseFloat(carbsMatch[1]) : undefined,
-              saturatedFat: satFatMatch ? parseFloat(satFatMatch[1]) : undefined,
-              sodium: sodiumMatch ? parseFloat(sodiumMatch[1]) : undefined,
-              ingredients: foundSnippet.substring(0, 300),
-              sourceUrl: brandMenuUrl || (foundLink ? (foundLink.startsWith('http') ? foundLink : 'https://' + foundLink) : undefined),
-              source: 'web_search',
-              snippet: foundSnippet
-            }];
-          }
-        }
-      } else {
-        addDebugLog(`[DuckDuckGo Lite Engine] Non-OK response for "${query}": status ${ddgLiteRes.status}`);
-      }
-    } catch (liteErr: any) {
-      addDebugLog(`[DuckDuckGo Lite Engine] Failed for "${query}": ${liteErr?.name || ''} ${liteErr?.message || liteErr}`);
-    }
-
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 15000);
-    const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query + " nutrition calories protein")}`;
-    const response = await fetch(url, {
-      signal: controller.signal as any,
-      headers: {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"
-      }
-    });
-    clearTimeout(timeout);
-    
-    if (response.status === 202) {
-      isBlockedByBotProtection = true;
-      addDebugLog(`[DuckDuckGo HTML Engine] BLOCKED by DuckDuckGo anti-bot system (HTTP 202 CAPTCHA challenge) for "${query}".`);
-      return [];
-    }
-
-    if (!response.ok) {
-      addDebugLog(`[DuckDuckGo HTML Engine] Non-OK response for "${query}": status ${response.status}`);
-      return [];
-    }
-    const text = await response.text();
-    if (text.includes('anomaly.js') || text.includes('challenge-form') || text.includes('botnet')) {
-      isBlockedByBotProtection = true;
-      addDebugLog(`[DuckDuckGo HTML Engine] BLOCKED by DuckDuckGo anomaly challenge script for "${query}".`);
-      return [];
-    }
-
-    const snippetRegex = /<a class="result__snippet[^>]*>(.*?)<\/a>/g;
-    const snippets: string[] = [];
-    let match;
-    while ((match = snippetRegex.exec(text)) !== null && snippets.length < 3) {
-      const cleanSnippet = match[1].replace(/<[^>]+>/g, '').trim();
-      if (cleanSnippet) snippets.push(cleanSnippet);
-    }
-
-    const results: any[] = [];
-    for (const snippet of snippets) {
-      const calMatch = snippet.match(/(\d{2,4})\s*(?:kcal|calories)/i);
-      const proteinMatch = snippet.match(/(\d+(?:\.\d+)?)\s*g\s*protein/i);
-      const fatMatch = snippet.match(/(\d+(?:\.\d+)?)\s*g\s*(?:total\s*)?fat/i);
-      const carbsMatch = snippet.match(/(\d+(?:\.\d+)?)\s*g\s*(?:of\s*)?carb(?:ohydrate)?s?/i);
-      const satFatMatch = snippet.match(/(\d+(?:\.\d+)?)\s*g\s*sat(?:urated)?\s*fat/i);
-      const sodiumMatch = snippet.match(/(\d+(?:\.\d+)?)\s*(?:mg|g)\s*sodium/i);
-
-      results.push({
-        query,
-        name: query,
-        calories: calMatch ? calMatch[1] : undefined,
-        protein: proteinMatch ? parseFloat(proteinMatch[1]) : undefined,
-        fat: fatMatch ? parseFloat(fatMatch[1]) : undefined,
-        carbohydrates: carbsMatch ? parseFloat(carbsMatch[1]) : undefined,
-        saturatedFat: satFatMatch ? parseFloat(satFatMatch[1]) : undefined,
-        sodium: sodiumMatch ? parseFloat(sodiumMatch[1]) : undefined,
-        source: 'web_search',
-        snippet
-      });
-    }
-    if (results.length > 0) {
-      addDebugLog(`[DuckDuckGo HTML Engine] Extracted ${results.length} snippet(s) for "${query}".`);
-    } else if (isBlockedByBotProtection) {
-      addDebugLog(`[DuckDuckGo Search] Search BLOCKED by DuckDuckGo anti-bot/CAPTCHA verification for "${query}". (Consider relying on USDA/OFF API endpoints or custom Google Search API).`);
-    } else {
-      addDebugLog(`[DuckDuckGo Search] No match found across all 3 methods for "${query}".`);
-    }
-    return results;
+    // DuckDuckGo searches have been removed because they frequently get blocked.
+    addDebugLog(`[DuckDuckGo Search] Bypassed DuckDuckGo search for "${query}" because web searches are disabled to prevent blocks.`);
+    return [];
   } catch (err: any) {
     addDebugLog(`[DuckDuckGo Search] Error for "${query}": ${err?.message || err}`);
     return [];
@@ -1376,6 +1186,27 @@ export function buildFoodAnalyzeInstructionLocal(context: {
     }
     if (sanitizedActiveMeal.chatTranscript) {
       delete sanitizedActiveMeal.chatTranscript;
+    }
+    if (sanitizedActiveMeal.receiptTable) {
+      delete sanitizedActiveMeal.receiptTable;
+    }
+    if (sanitizedActiveMeal.nutrients) {
+      delete sanitizedActiveMeal.nutrients;
+    }
+    if (sanitizedActiveMeal.verdict) {
+      delete sanitizedActiveMeal.verdict;
+    }
+    if (sanitizedActiveMeal.itemsBreakdown && Array.isArray(sanitizedActiveMeal.itemsBreakdown)) {
+      sanitizedActiveMeal.itemsBreakdown = sanitizedActiveMeal.itemsBreakdown.map((item: any) => ({
+        scoutIndex: item.scoutIndex,
+        dbId: item.dbId,
+        canonicalDbName: item.canonicalDbName || item.name,
+        foodType: item.foodType,
+        weightGrams: item.weightGrams,
+        dbSource: item.dbSource,
+        cookingMethod: item.cookingMethod,
+        components: item.components ? item.components.map((c: any) => ({ searchQuery: c.searchQuery, volumePercentage: c.volumePercentage })) : undefined
+      }));
     }
   }
 
@@ -4556,7 +4387,7 @@ app.post("/api/gemini/food-analyze", async (req, res) => {
     let scoutRecommendedMode: string | null = null;
     let scoutCookingMethod = "";
     visionScoutContentType = 'visual';
-    let diningEnvironment = "casual_restaurant";
+    let diningEnvironment = activeMeal?.diningEnvironment || "unknown";
     const dbMatchMap = new Map<string, any>();
     const queriesToSearch: string[] = [];
     const scoutOriginalQueries: string[] = [];
@@ -4588,8 +4419,8 @@ app.post("/api/gemini/food-analyze", async (req, res) => {
       }
       visionScoutContentType = req.body.scoutContentType || 'visual';
       visionScoutRanAndReturnedItems = visionScoutItems.length > 0;
-    } else if (req.body.skipScout && req.body.activeScoutItems && req.body.activeScoutItems.length > 0) {
-      addDebugLog(`[Shortcut] skipScout is true. Inheriting scout items from previous run.`);
+    } else if ((req.body.skipScout || req.body.portionChoices) && req.body.activeScoutItems && req.body.activeScoutItems.length > 0) {
+      addDebugLog(`[Shortcut] skipScout or portionChoices is true. Inheriting scout items from previous run.`);
       visionScoutItems = applyPortionChoices(
         req.body.activeScoutItems,
         req.body.portionChoices
@@ -4732,7 +4563,7 @@ app.post("/api/gemini/food-analyze", async (req, res) => {
           scoutCookingMethod = scoutResult.scoutCookingMethod;
           visionScoutContentType = scoutResult.visionScoutContentType;
           scoutRecommendedMode = scoutResult.scoutRecommendedMode;
-          diningEnvironment = scoutResult.diningEnvironment || "casual_restaurant";
+          diningEnvironment = scoutResult.diningEnvironment || "unknown";
           
           if (req.body.userSelectedMode === 'review') {
             scoutRecommendedMode = "new_log";
@@ -8115,6 +7946,8 @@ Current User Input: "${message}"`) + modeDPromptSuffix;
           'visualIngredients',
           'components',
           'cookingAdded',
+          'boundingBox2D',
+          'sourceImageIndex',
         ];
         rawFoodData.itemsBreakdown = rawFoodData.itemsBreakdown.map((newItem: any, idx: number) => {
           let origItem: any = null;
@@ -9045,6 +8878,7 @@ Current User Input: "${message}"`) + modeDPromptSuffix;
                   hasSauceOrDressing: hasSauceOrDressingReceipt,
                   visualSheen: 0.5,
                   visualCoating: 0.5,
+                  dbSource: it.dbSource,
                 });
 
           let cookingCal = prepReceipt.addedCalories;

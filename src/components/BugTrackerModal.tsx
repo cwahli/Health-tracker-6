@@ -172,10 +172,29 @@ export default function BugTrackerModal({ isOpen, onClose }: BugTrackerModalProp
       const { saveAs } = await import('file-saver');
       const zip = new JSZip();
 
-      // Root metadata and identified problems
-      if (tag.identified_problems) {
-        zip.file('identified_problems.md', tag.identified_problems);
-      }
+      // Requirement 12: Include bug_summary.md (and bug summary.md), overview.md, accessibility_tree.txt, calculation_table.json, screenshots
+      const bugSummaryContent = [
+        `# Bug Summary: ${tag.title || tag.id}`,
+        `- Category: ${tag.category || 'Other'}`,
+        `- Status: ${tag.status || 'to_fix'}`,
+        `- ID: ${tag.id}`,
+        `- Exported At: ${new Date().toISOString()}`,
+        '',
+        `## Identified Problems`,
+        tag.identified_problems || tag.symptom || '(No identified problems recorded)',
+        '',
+        `## Progress & Notes`,
+        tag.comments?.map((c: any) => `- [${c.created_at || ''}] ${c.body || ''}`).join('\n') ||
+          tag.resolution_note ||
+          '(No progress notes recorded)',
+        '',
+        `## What's Still Open`,
+        tag.whats_still_open || '(None)',
+      ].join('\n');
+
+      zip.file('bug_summary.md', bugSummaryContent);
+      zip.file('bug summary.md', bugSummaryContent);
+
       zip.file(
         'meta.json',
         JSON.stringify(
@@ -195,21 +214,49 @@ export default function BugTrackerModal({ isOpen, onClose }: BugTrackerModalProp
         )
       );
 
-      const reports = (tag.linked_issues || []).filter((li: any) => li.reportId);
+      const reports = (tag.linked_issues || []).filter((li: any) => li.reportId || li.id);
+
+      let rootOverviewText = '';
+      let rootA11yText = '';
+      let rootCalcJson: any = null;
+
       for (const li of reports) {
-        const folder = zip.folder(String(li.reportId).slice(0, 8));
+        const reportId = li.reportId || li.id;
+        const folder = zip.folder(String(reportId).slice(0, 8));
         if (!folder) continue;
 
-        // 1. Download shots
+        let overviewFetched = false;
+        let a11yFetched = false;
+        let calcFetched = false;
+
+        // 1. Download screenshots from R2
         for (const shot of li.r2_shots || []) {
           const name = String(shot.key).split('/').pop() as string;
-          const res = await fetch(artifactUrl(tag.id, li.reportId, name));
-          if (res.ok) folder.file(name, await res.blob());
+          try {
+            const res = await fetch(artifactUrl(tag.id, reportId, name));
+            if (res.ok) folder.file(name, await res.blob());
+          } catch {
+            /* ignore shot fetch error */
+          }
         }
 
-        // 2. Candidate artifact files to probe if not explicitly in r2_files.
-        // Do NOT hardcode 'nutrition_table.md' — the actual file uses the meal name
-        // (e.g. "01_00 - yolk steak bowl.md") and is always listed in r2_files.
+        // Embedded screenshots fallback
+        const embeddedShots: string[] = li.payload?.shots || li.shots || [];
+        embeddedShots.forEach((shotStr, idx) => {
+          if (typeof shotStr === 'string' && shotStr.startsWith('data:image')) {
+            try {
+              const base64Data = shotStr.split(',')[1];
+              const binary = atob(base64Data);
+              const bytes = new Uint8Array(binary.length);
+              for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+              folder.file(`shot-${String(idx + 1).padStart(2, '0')}.jpg`, bytes);
+            } catch {
+              /* ignore base64 decode error */
+            }
+          }
+        });
+
+        // 2. Candidate artifact files
         const standardNames = new Set<string>([
           'accessibility_tree.txt',
           'domain_pack.json',
@@ -220,6 +267,8 @@ export default function BugTrackerModal({ isOpen, onClose }: BugTrackerModalProp
           'note.txt',
           'env.json',
           'payload.json',
+          'debug_payload.json',
+          'calculation_table.json',
         ]);
 
         const skipDuplicateFiles = new Set([
@@ -229,7 +278,6 @@ export default function BugTrackerModal({ isOpen, onClose }: BugTrackerModalProp
           'manifest.json',
         ]);
 
-        // Add all r2_files entries by name so dynamic files (meal .md, debug-*.json) are included
         for (const f of li.r2_files || []) {
           if (!skipDuplicateFiles.has(f.name)) standardNames.add(f.name);
         }
@@ -237,21 +285,113 @@ export default function BugTrackerModal({ isOpen, onClose }: BugTrackerModalProp
         for (const name of Array.from(standardNames)) {
           if (skipDuplicateFiles.has(name)) continue;
           try {
-            const res = await fetch(artifactUrl(tag.id, li.reportId, name));
+            const res = await fetch(artifactUrl(tag.id, reportId, name));
             if (!res.ok) continue;
             const ct = res.headers.get('content-type') || '';
+            let text = '';
             if (ct.includes('application/json')) {
               const json = await res.json();
-              folder.file(name, JSON.stringify('data' in json ? json.data : json, null, 2));
+              text = JSON.stringify('data' in json ? json.data : json, null, 2);
+              folder.file(name, text);
+              if (
+                name === 'domain_pack.json' ||
+                name === 'payload.json' ||
+                name === 'debug_payload.json' ||
+                name === 'calculation_table.json'
+              ) {
+                calcFetched = true;
+                if (!rootCalcJson) rootCalcJson = 'data' in json ? json.data : json;
+              }
             } else {
-              folder.file(name, await res.text());
+              text = await res.text();
+              folder.file(name, text);
+              if (name === 'overview.md') {
+                overviewFetched = true;
+                if (!rootOverviewText) rootOverviewText = text;
+              }
+              if (name === 'accessibility_tree.txt') {
+                a11yFetched = true;
+                if (!rootA11yText) rootA11yText = text;
+              }
             }
           } catch {
             /* ignore individual file probe */
           }
         }
 
+        // 3. Fallbacks if R2 files missing
+        if (!overviewFetched) {
+          const overviewFallback = [
+            `# Bug Overview: ${tag.title || tag.id}`,
+            `- Report ID: ${reportId}`,
+            `- Created At: ${li.created_at || new Date().toISOString()}`,
+            `- Category: ${tag.category || 'Other'}`,
+            '',
+            `## Click Trail & Interaction History`,
+            li.payload?.interactions
+              ?.map(
+                (act: any) =>
+                  `- [${act.timestamp || ''}] ${act.type || 'action'}: ${
+                    act.target || act.details || JSON.stringify(act)
+                  }`
+              )
+              .join('\n') || '(No click trail recorded)',
+            '',
+            `## Console & Runtime Errors`,
+            li.payload?.logs || li.logs || '(No console/runtime errors captured)',
+            '',
+            `## Network Log & API Calls`,
+            Array.isArray(li.payload?.network)
+              ? li.payload.network
+                  .map(
+                    (net: any) =>
+                      `- [${net.method || 'GET'}] ${net.url} (${net.status || '200'})`
+                  )
+                  .join('\n')
+              : li.payload?.network || '(No network activity logged)',
+          ].join('\n');
+          folder.file('overview.md', overviewFallback);
+          if (!rootOverviewText) rootOverviewText = overviewFallback;
+        }
+
+        if (!a11yFetched) {
+          const a11yFallback =
+            li.payload?.a11y?.textOutline ||
+            li.payload?.a11y?.tree ||
+            li.a11y ||
+            '(Accessibility tree not captured)';
+          folder.file('accessibility_tree.txt', String(a11yFallback));
+          if (!rootA11yText) rootA11yText = String(a11yFallback);
+        }
+
+        if (!calcFetched) {
+          const calcFallback =
+            li.payload?.debug_payload ||
+            li.payload?.domain_pack || {
+              nutrition_table_md: li.payload?.nutrition_table_md || '',
+              meal_file_name: li.payload?.meal_file_name || '',
+              payload: li.payload,
+            };
+          folder.file('calculation_table.json', JSON.stringify(calcFallback, null, 2));
+          if (!rootCalcJson) rootCalcJson = calcFallback;
+        }
+
+        folder.file('bug_summary.md', bugSummaryContent);
       }
+
+      // Root level fallbacks
+      if (rootOverviewText) zip.file('overview.md', rootOverviewText);
+      else {
+        zip.file(
+          'overview.md',
+          `# Bug Overview: ${tag.title || tag.id}\nCategory: ${tag.category || 'Other'}\nNo report logs attached.`
+        );
+      }
+
+      if (rootA11yText) zip.file('accessibility_tree.txt', rootA11yText);
+
+      if (rootCalcJson) zip.file('calculation_table.json', JSON.stringify(rootCalcJson, null, 2));
+
       const blob = await zip.generateAsync({ type: 'blob' });
       const safeName = String(tag.title || tag.id).slice(0, 40).replace(/[^a-zA-Z0-9_-]/g, '_');
       saveAs(blob, `bug-${safeName}.zip`);
@@ -953,13 +1093,11 @@ export default function BugTrackerModal({ isOpen, onClose }: BugTrackerModalProp
                   type="button"
                   onClick={() => {
                     const tag = data?.bugTags?.find((t: any) => t.id === triagingTagId);
-                    if (tag) {
-                      setAnalyzeModalTag({
-                        id: tag.id,
-                        title: tag.title,
-                        modelId: triageModelByTag[tag.id] || 'gemini-3.5-flash-lite',
-                      });
-                    }
+                    setAnalyzeModalTag({
+                      id: triagingTagId,
+                      title: tag?.title || analyzeModalTag?.title || triagingTagId,
+                      modelId: triageModelByTag[triagingTagId] || analyzeModalTag?.modelId || 'gemini-3.5-flash-lite',
+                    });
                   }}
                   className="px-3.5 py-2 text-xs font-bold text-violet-200 bg-violet-950/60 hover:bg-violet-900/80 border border-violet-500/40 rounded-2xl transition-all flex items-center gap-1.5 cursor-pointer shadow-sm"
                 >

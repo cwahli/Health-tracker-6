@@ -269,6 +269,12 @@ class JobStoreImpl {
     return () => this.listeners.delete(listener);
   }
 
+  clearForTests() {
+    this.jobs.clear();
+    this.deletedJobIds.clear();
+    this.listeners.clear();
+  }
+
   private notify() {
     this.listeners.forEach((l) => l());
   }

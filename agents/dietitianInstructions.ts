@@ -352,7 +352,28 @@ export function buildModeAEditInstruction(context: {
   userProfile?: any;
 }): string {
   const { biomarkersList, targetLimits } = formatPatientContext(context);
-  const mealStr = context.activeMeal ? JSON.stringify(context.activeMeal, null, 2) : "None";
+  let sanitizedActiveMeal = null;
+  if (context.activeMeal) {
+    sanitizedActiveMeal = { ...context.activeMeal };
+    if (sanitizedActiveMeal.imageUrl && sanitizedActiveMeal.imageUrl.startsWith("data:image/")) sanitizedActiveMeal.imageUrl = "[base64_image_data_truncated]";
+    if (sanitizedActiveMeal.imageUrls) sanitizedActiveMeal.imageUrls = [];
+    delete sanitizedActiveMeal.chatTranscript;
+    delete sanitizedActiveMeal.receiptTable;
+    delete sanitizedActiveMeal.nutrients;
+    delete sanitizedActiveMeal.verdict;
+    if (sanitizedActiveMeal.itemsBreakdown && Array.isArray(sanitizedActiveMeal.itemsBreakdown)) {
+      sanitizedActiveMeal.itemsBreakdown = sanitizedActiveMeal.itemsBreakdown.map((item: any) => ({
+        scoutIndex: item.scoutIndex,
+        dbId: item.dbId,
+        canonicalDbName: item.canonicalDbName || item.name,
+        foodType: item.foodType,
+        weightGrams: item.weightGrams,
+        dbSource: item.dbSource,
+        cookingMethod: item.cookingMethod
+      }));
+    }
+  }
+  const mealStr = sanitizedActiveMeal ? JSON.stringify(sanitizedActiveMeal, null, 2) : "None";
 
   return `CURRENT_ACTIVE_MEAL_STATE: ${mealStr}
 
@@ -367,6 +388,7 @@ ${targetLimits}
 === ACTIVE TASK: ACTIVE MEAL REASSESSMENT / EDIT ===
 The user requested an edit to CURRENT_ACTIVE_MEAL_STATE (e.g. "Change chicken weight to 250g").
 Recalculate nutrients, update "foodData" with corrected values, provide an updated assessment in "message", and output the corresponding command in "modificationCommand".
+CRITICAL INSTRUCTION: You MUST explicitly refresh all numerical callouts and calculations in both the "message" and "verdict" fields to reflect the new weights or item adjustments. Do NOT copy-paste the previous turn's narrative if weights have changed.
 
 ${REQUIRED_OUTPUT_JSON_SCHEMA}`;
 }
@@ -405,7 +427,35 @@ export function buildModeDEditInstruction(context: {
   userProfile?: any;
 }): string {
   const { biomarkersList, targetLimits } = formatPatientContext(context);
-  const compStr = context.activeComparison ? JSON.stringify(context.activeComparison, null, 2) : "None";
+  let sanitizedComparison = null;
+  if (context.activeComparison) {
+    sanitizedComparison = { ...context.activeComparison };
+    delete sanitizedComparison.chatTranscript;
+    // Comparisons typically have arrays of meals
+    if (sanitizedComparison.meals && Array.isArray(sanitizedComparison.meals)) {
+       sanitizedComparison.meals = sanitizedComparison.meals.map((m: any) => {
+         const sm = { ...m };
+         if (sm.imageUrl && sm.imageUrl.startsWith("data:image/")) sm.imageUrl = "[base64_image_data_truncated]";
+         if (sm.imageUrls) sm.imageUrls = [];
+         delete sm.receiptTable;
+         delete sm.nutrients;
+         delete sm.verdict;
+         if (sm.itemsBreakdown && Array.isArray(sm.itemsBreakdown)) {
+           sm.itemsBreakdown = sm.itemsBreakdown.map((item: any) => ({
+             scoutIndex: item.scoutIndex,
+             dbId: item.dbId,
+             canonicalDbName: item.canonicalDbName || item.name,
+             foodType: item.foodType,
+             weightGrams: item.weightGrams,
+             dbSource: item.dbSource,
+             cookingMethod: item.cookingMethod
+           }));
+         }
+         return sm;
+       });
+    }
+  }
+  const compStr = sanitizedComparison ? JSON.stringify(sanitizedComparison, null, 2) : "None";
 
   return `CURRENT_ACTIVE_COMPARISON_STATE: ${compStr}
 
@@ -419,6 +469,7 @@ ${targetLimits}
 
 === ACTIVE TASK: COMPARISON REFINEMENT ===
 Update your product selection and clinical coaching feedback based on the user's portion adjustments or questions.
+CRITICAL INSTRUCTION: You MUST explicitly refresh all numerical callouts and calculations in both the "message" and "verdict" fields to reflect the new weights or item adjustments. Do NOT copy-paste the previous turn's narrative if weights have changed.
 
 ${REQUIRED_OUTPUT_JSON_SCHEMA}`;
 }

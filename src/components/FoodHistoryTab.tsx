@@ -335,10 +335,18 @@ export default function FoodHistoryTab({
     });
   };
 
-  const [jobs, setJobs] = useState(() => JobStore.getAllJobs().filter(j => j.kind === 'food_log' || j.kind === 'food_compare'));
+  const [jobs, setJobs] = useState(() =>
+    JobStore.getAllJobs().filter(
+      j => j.kind === 'food_log' || j.kind === 'food_compare' || j.kind === 'food' || !j.kind
+    )
+  );
   useEffect(() => {
     const unsubscribe = JobStore.subscribe(() => {
-      setJobs(JobStore.getAllJobs().filter(j => j.kind === 'food_log' || j.kind === 'food_compare'));
+      setJobs(
+        JobStore.getAllJobs().filter(
+          j => j.kind === 'food_log' || j.kind === 'food_compare' || j.kind === 'food' || !j.kind
+        )
+      );
     });
     return () => {
       unsubscribe();
@@ -389,20 +397,32 @@ export default function FoodHistoryTab({
 
     const jobItems = jobs
       .filter(job => {
+        if (!job) return false;
         // Exclude draft jobs
         if (job.status === 'draft') return false;
         const hasText = !!job.inputSnapshot?.text?.trim();
-        const hasImages = !!(job.inputSnapshot as any)?.hasImage;
-        const hasServerResult = !!(job.result?.pendingFoodLog || job.result?.data || job.result?.photoUrl);
+        const hasImages = !!(job.inputSnapshot as any)?.hasImage || !!job.photoUrl;
+        const hasServerResult = !!(
+          job.result?.pendingFoodLog ||
+          job.result?.raw?.data ||
+          job.result?.data ||
+          job.result?.photoUrl
+        );
         const isActiveServerJob =
-          (job.kind === 'food_log' || job.kind === 'food_compare' || (job as any).kind === 'food') &&
-          ['queued', 'running', 'failed', 'succeeded'].includes(job.status);
+          (job.kind === 'food_log' || job.kind === 'food_compare' || (job as any).kind === 'food' || !job.kind) &&
+          ['queued', 'running', 'processing', 'awaiting_user', 'cancel_requested', 'failed', 'succeeded', 'cancelled'].includes(job.status);
 
         if (!hasText && !hasImages && !hasServerResult && !isActiveServerJob) return false;
 
         if (job.status !== 'succeeded') return true;
-        const pendingFoodLog = job.messages?.find(m => m.pendingFoodLog)?.pendingFoodLog || job.result?.pendingFoodLog || job.result?.data;
-        if (!pendingFoodLog) return false;
+        const pendingFoodLog =
+          job.result?.pendingFoodLog ||
+          job.result?.raw?.data ||
+          job.result?.data ||
+          job.messages?.find((m: any) => m.pendingFoodLog)?.pendingFoodLog ||
+          job.messages?.find((m: any) => m.data?.pendingFoodLog)?.data?.pendingFoodLog;
+
+        if (!pendingFoodLog) return true;
         return !activeFoodLogs.some(f => {
           if (f.id === pendingFoodLog.id || f.id === job.id || (f as any).jobId === job.id) return true;
           // Soft match: same fingerprint or same day+name+kcal

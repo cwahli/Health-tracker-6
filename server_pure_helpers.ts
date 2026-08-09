@@ -711,7 +711,9 @@ export function applyNutrientRealityChecks(
     isKnownDatabaseBrandSync(identityForChecks) ||
     /\b(kebab|tikka|wrap)\b/i.test(identityForChecks);
 
-  if (isFastFoodOrChain && (itemNutrients.calories || 0) > 0) {
+  const isWholeFood = ctx?.physicalForm === 'SOLID_FRUIT_VEG' || dbSource === 'canonical_dict';
+
+  if (isFastFoodOrChain && !isWholeFood && (itemNutrients.calories || 0) > 0) {
     const currentSodium = itemNutrients.sodium || 0;
     const commercialSodiumFloor = Math.round((itemNutrients.calories || 0) * 1.8);
     if (currentSodium < commercialSodiumFloor) {

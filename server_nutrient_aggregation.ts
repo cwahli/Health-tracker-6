@@ -220,8 +220,10 @@ export function aggregateItemsNutrients(
           cookingAdded: item.cookingAdded || null,
           visualSheen: 0.5,
           visualCoating: 0.5,
-          diningEnvironment: item.diningEnvironment || 'casual_restaurant',
+          diningEnvironment: item.diningEnvironment || 'unknown',
           hasSauceOrDressing: hasSauces,
+          physicalForm: item.physicalFormClassification?.physicalForm,
+          dbSource: item.dbSource || dbSource,
         });
 
         cookingCal = prepRes.addedCalories;
@@ -297,7 +299,7 @@ export function aggregateItemsNutrients(
     const cookingMethod = item.cookingMethod || 'unknown';
     const visualSheen = item.visualSheen !== undefined ? item.visualSheen : 0.5;
     const visualCoating = item.visualCoating !== undefined ? item.visualCoating : 0.5;
-    const diningEnvironment = item.diningEnvironment || 'casual_restaurant';
+    const diningEnvironment = item.diningEnvironment || 'unknown';
     const nameLowerForMatrix = canonicalName.toLowerCase();
     const foodMatrix = (item.foodType === 'ultra_processed' || item.foodType === 'root_veg' || nameLowerForMatrix.includes('potato') || nameLowerForMatrix.includes('wedge') || nameLowerForMatrix.includes('fry') || nameLowerForMatrix.includes('fries') || nameLowerForMatrix.includes('chip')) ? 'CELLULAR_STARCH' : nameLowerForMatrix;
     
@@ -327,6 +329,8 @@ export function aggregateItemsNutrients(
       visualCoating: visualCoating,
       diningEnvironment: diningEnvironment,
       hasSauceOrDressing: hasSauceOrDressing,
+      physicalForm: item.physicalFormClassification?.physicalForm,
+      dbSource: item.dbSource || dbSource,
     });
 
     if ((addedNutrients.addedFat > 0 || addedNutrients.addedSodium > 0) && dbSource !== 'estimated' && !item.primaryBase100g) {
@@ -492,6 +496,7 @@ export function aggregateItemsNutrients(
       potassium: itemNutrients.potassium || 0,
       totalFibre: itemNutrients.totalFibre || itemNutrients.fiber || itemNutrients.fibre || itemNutrients.serat || 0,
       solubleFibre: itemNutrients.solubleFibre || 0,
+      nutrients: itemNutrients,
       labelNutrientsPerServing: item.labelNutrientsPerServing || null,
       dbSource,
       dbId,

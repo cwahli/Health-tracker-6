@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { motion } from 'motion/react';
-import { Loader2, Trash2, XCircle, CheckCircle2, AlertTriangle, Eye, Save, RotateCcw } from 'lucide-react';
+import { Loader2, Trash2, XCircle, CheckCircle2, AlertTriangle, Eye, Save, RotateCcw, Sliders, HelpCircle } from 'lucide-react';
 import { AgentJob } from '../jobs/types';
 import { ImageStore } from '../jobs/ImageStore';
 import { JobStore } from '../jobs/JobStore';
@@ -81,7 +81,15 @@ export default function TaskPlaceholderCard({
         }
       }
 
-      // 2. FALLBACK: If ImageStore didn't yield a valid URL but we have an active, visible preview image in the state
+      // 2. FALLBACK: If ImageStore didn't yield a valid URL but we have an active, visible preview image or job photoUrl
+      const remotePhoto =
+        job.photoUrl ||
+        job.result?.photoUrl ||
+        job.result?.clean_result?.photoUrl ||
+        (job.result as any)?.data?.photoUrl ||
+        (job as any).clean_result?.photoUrl ||
+        (job as any).photo_url;
+
       if (!finalImageUrl && imageUrl) {
         if (imageUrl.startsWith('data:image/') || imageUrl.startsWith('http')) {
           finalImageUrl = imageUrl;
@@ -99,6 +107,9 @@ export default function TaskPlaceholderCard({
             console.warn('[TaskPlaceholderCard] Failed to convert active preview imageUrl state to base64:', e);
           }
         }
+      }
+      if (!finalImageUrl && remotePhoto) {
+        finalImageUrl = remotePhoto;
       }
 
       // Apply the resolved image URL if found
@@ -151,6 +162,11 @@ export default function TaskPlaceholderCard({
         // 2. Direct photoUrl or pendingFoodLog.imageUrl / imageUrls
         const directPhoto =
           job.photoUrl ||
+          job.result?.photoUrl ||
+          job.result?.clean_result?.photoUrl ||
+          (job.result as any)?.data?.photoUrl ||
+          (job as any).clean_result?.photoUrl ||
+          (job as any).photo_url ||
           pendingFoodLog?.imageUrl ||
           (pendingFoodLog?.imageUrls && pendingFoodLog.imageUrls[0]);
 
@@ -189,11 +205,15 @@ export default function TaskPlaceholderCard({
         return ahead > 0 ? `Waiting — ${ahead} ahead` : 'Waiting to start...';
       }
       case 'running':
+      case 'processing':
         return job.statusMessage || (job.kind === 'medical' ? 'Analyzing medical data...' : 'Analyzing your meal...');
       case 'failed':
         return 'Analysis failed';
       case 'cancelled':
+      case 'cancel_requested':
         return 'Analysis cancelled';
+      case 'awaiting_user':
+        return 'Action required';
       case 'succeeded':
         return 'Analysis completed';
       default:
@@ -206,15 +226,19 @@ export default function TaskPlaceholderCard({
       case 'queued':
         return 'text-slate-500 bg-slate-100 dark:bg-slate-900/60';
       case 'running':
+      case 'processing':
         return 'text-indigo-600 bg-indigo-50 dark:bg-indigo-950/40';
       case 'failed':
         return 'text-rose-600 bg-rose-50 dark:bg-rose-950/40';
       case 'cancelled':
+      case 'cancel_requested':
         return 'text-amber-600 bg-amber-50 dark:bg-amber-950/40';
+      case 'awaiting_user':
+        return 'text-purple-700 dark:text-purple-300 bg-purple-100 dark:bg-purple-900/60 font-bold border border-purple-300 dark:border-purple-700 animate-pulse';
       case 'succeeded':
         return 'text-emerald-600 bg-emerald-50 dark:bg-emerald-950/40';
       default:
-        return 'text-slate-500 bg-slate-100';
+        return 'text-slate-500 bg-slate-100 dark:bg-slate-900/60';
     }
   };
 
@@ -225,8 +249,30 @@ export default function TaskPlaceholderCard({
     job.messages?.find((m: any) => m.pendingFoodLog)?.pendingFoodLog ||
     job.messages?.find((m: any) => m.data?.pendingFoodLog)?.data?.pendingFoodLog;
 
+  const rawInputText = job.inputSnapshot?.text?.trim() || '';
+  const displayTitle =
+    job.status === 'awaiting_user'
+      ? (pendingFoodLog?.name
+          ? `${pendingFoodLog.name} — Portion Selection Needed`
+          : job.result?.portionClarify?.promptMessage ||
+            job.result?.clean_result?.portionClarify?.promptMessage ||
+            (job as any).clean_result?.portionClarify?.promptMessage ||
+            'Portion Choice Needed')
+      : (pendingFoodLog?.name ||
+        (rawInputText && rawInputText !== 'Analyze this meal photo.'
+          ? rawInputText
+          : job.kind === 'food_compare'
+          ? 'Meal Comparison Request'
+          : job.kind === 'medical'
+          ? 'Medical Data Request'
+          : 'Analyzing Meal Photo...'));
+
   return (
-    <div className="bg-theme-bg-card border border-theme-border rounded-3xl py-4 pl-0 pr-4 shadow-sm mx-0 mb-4 w-full transition-all hover:shadow-md overflow-hidden">
+    <div className={`bg-theme-bg-card border rounded-3xl py-4 pl-0 pr-4 shadow-sm mx-0 mb-4 w-full transition-all hover:shadow-md overflow-hidden ${
+      job.status === 'awaiting_user'
+        ? 'border-purple-300 dark:border-purple-700 bg-purple-50/30 dark:bg-purple-950/20'
+        : 'border-theme-border'
+    }`}>
       <div className="flex gap-4">
         {/* Preview Image / Fallback Icon */}
         <div className="w-20 h-20 rounded-r-2xl overflow-hidden bg-slate-100 dark:bg-slate-900 flex-shrink-0 relative flex items-center justify-center border border-theme-border/50 border-l-0">
@@ -243,10 +289,16 @@ export default function TaskPlaceholderCard({
               No Image
             </div>
           )}
-          {/* Progress Overlay */}
-          {(job.status === 'queued' || job.status === 'running') && (
+          {/* Progress / Action Overlay */}
+          {(job.status === 'queued' || job.status === 'running' || job.status === 'processing') && (
             <div className="absolute inset-0 bg-slate-950/20 backdrop-blur-[1px] flex items-center justify-center">
               <Loader2 className="w-5 h-5 text-white animate-spin" />
+            </div>
+          )}
+          {job.status === 'awaiting_user' && (
+            <div className="absolute inset-0 bg-purple-950/40 backdrop-blur-[1px] flex flex-col items-center justify-center p-1 text-center">
+              <Sliders className="w-5 h-5 text-purple-200 animate-bounce mb-0.5" />
+              <span className="text-[9px] font-bold text-white leading-tight">Pick Portion</span>
             </div>
           )}
         </div>
@@ -258,7 +310,7 @@ export default function TaskPlaceholderCard({
               <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${getStatusColorClass()}`}>
                 {getStatusLabel()}
               </span>
-              {(job.status === 'running' || job.status === 'queued') && job.progressPercent > 0 && (
+              {(job.status === 'running' || job.status === 'queued' || job.status === 'processing') && job.progressPercent > 0 && (
                 <span className="text-[10px] font-mono text-slate-400 font-bold">
                   {job.progressPercent}%
                 </span>
@@ -266,10 +318,10 @@ export default function TaskPlaceholderCard({
             </div>
 
             <h4 className="text-sm font-bold text-theme-text-primary truncate">
-              {pendingFoodLog?.name || job.inputSnapshot?.text || (job.kind === 'medical' ? 'Analyzing medical request' : 'Analyzing meal request')}
+              {displayTitle}
             </h4>
             
-            {job.status === 'running' && (
+            {(job.status === 'running' || job.status === 'processing') && (
               <div className="w-full bg-slate-100 dark:bg-slate-800 h-1 rounded-full overflow-hidden mt-1.5">
                 <motion.div
                   className="bg-indigo-600 h-full rounded-full"
@@ -278,6 +330,12 @@ export default function TaskPlaceholderCard({
                   transition={{ duration: 0.3 }}
                 />
               </div>
+            )}
+
+            {job.status === 'awaiting_user' && (
+              <p className="text-xs text-purple-700 dark:text-purple-300 font-medium mt-1">
+                👉 Please confirm portion size to finish logging your meal.
+              </p>
             )}
 
             {job.status === 'failed' && (
@@ -305,86 +363,84 @@ export default function TaskPlaceholderCard({
 
           {/* Actions */}
           <div className="flex items-center justify-end gap-2 mt-3 pt-2 border-t border-theme-border/40">
-            {(job.status === 'queued' || job.status === 'running') && (
-              <>
-                <button
-                  onClick={() => onView(job.id)}
-                  className="px-3 py-1.5 text-xs font-bold text-indigo-600 hover:bg-indigo-50 dark:hover:bg-indigo-950/20 rounded-xl transition-all flex items-center gap-1 cursor-pointer"
-                >
-                  <Eye className="w-3.5 h-3.5" />
-                  View Status
-                </button>
-                <button
-                  onClick={() => onCancel(job.id)}
-                  className="px-3 py-1.5 text-xs font-bold text-amber-600 hover:bg-amber-50 dark:hover:bg-amber-950/20 rounded-xl transition-all flex items-center gap-1 cursor-pointer"
-                >
-                  <XCircle className="w-3.5 h-3.5" />
-                  Cancel
-                </button>
-              </>
-            )}
-
-            {(job.status === 'failed' || job.status === 'cancelled') && (
-              <>
-                <button
-                  onClick={() => {
-                    JobStore.updateJob(job.id, {
-                      status: 'queued',
-                      retryNotBefore: undefined,
-                      error: undefined,
-                      statusMessage: 'Retrying analysis...'
-                    });
-                  }}
-                  className="px-3 py-1.5 text-xs font-bold text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-950/20 rounded-xl transition-all flex items-center gap-1 cursor-pointer"
-                >
-                  <RotateCcw className="w-3.5 h-3.5" />
-                  Retry
-                </button>
-                <button
-                  onClick={() => onView(job.id)}
-                  className="px-3 py-1.5 text-xs font-bold text-indigo-600 hover:bg-indigo-50 dark:hover:bg-indigo-950/20 rounded-xl transition-all flex items-center gap-1 cursor-pointer"
-                >
-                  <Eye className="w-3.5 h-3.5" />
-                  View Status
-                </button>
-              </>
-            )}
-
-            {job.status === 'succeeded' && (
-              <>
-                <button
-                  onClick={() => onView(job.id)}
-                  className="px-3 py-1.5 text-xs font-bold text-indigo-600 hover:bg-indigo-50 dark:hover:bg-indigo-950/20 rounded-xl transition-all flex items-center gap-1 cursor-pointer"
-                >
-                  <Eye className="w-3.5 h-3.5" />
-                  View Result
-                </button>
-                {pendingFoodLog && (
-                  <button
-                    onClick={handleLocalSave}
-                    disabled={isSaving}
-                    className="px-3 py-1.5 text-xs font-bold bg-indigo-600 text-white hover:bg-indigo-700 disabled:bg-indigo-400 rounded-xl shadow-sm hover:shadow transition-all flex items-center gap-1 cursor-pointer disabled:cursor-not-allowed"
-                  >
-                    {isSaving ? (
-                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                    ) : (
-                      <Save className="w-3.5 h-3.5" />
-                    )}
-                    {isSaving ? 'Saving...' : 'Save Log'}
-                  </button>
-                )}
-              </>
-            )}
-
-            {(job.status === 'failed' || job.status === 'cancelled' || job.status === 'succeeded') && (
+            {/* View / Select Portion Button */}
+            {job.status === 'awaiting_user' ? (
               <button
-                onClick={() => onDelete(job.id)}
-                className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/20 rounded-full transition-all cursor-pointer"
-                title="Delete task"
+                type="button"
+                onClick={() => onView(job.id)}
+                className="px-3.5 py-1.5 text-xs font-bold bg-purple-600 hover:bg-purple-700 text-white rounded-xl shadow transition-all flex items-center gap-1.5 cursor-pointer animate-pulse"
               >
-                <Trash2 className="w-4 h-4" />
+                <Sliders className="w-3.5 h-3.5" />
+                Select Portion
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() => onView(job.id)}
+                className="px-3 py-1.5 text-xs font-bold text-indigo-600 hover:bg-indigo-50 dark:hover:bg-indigo-950/20 rounded-xl transition-all flex items-center gap-1 cursor-pointer"
+              >
+                <Eye className="w-3.5 h-3.5" />
+                {job.status === 'succeeded' ? 'View Result' : 'View Status'}
               </button>
             )}
+
+            {/* Save Log Button for Succeeded Jobs */}
+            {job.status === 'succeeded' && pendingFoodLog && (
+              <button
+                type="button"
+                onClick={handleLocalSave}
+                disabled={isSaving}
+                className="px-3 py-1.5 text-xs font-bold bg-indigo-600 text-white hover:bg-indigo-700 disabled:bg-indigo-400 rounded-xl shadow-sm hover:shadow transition-all flex items-center gap-1 cursor-pointer disabled:cursor-not-allowed"
+              >
+                {isSaving ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <Save className="w-3.5 h-3.5" />
+                )}
+                {isSaving ? 'Saving...' : 'Save Log'}
+              </button>
+            )}
+
+            {/* Retry Button for Failed or Cancelled Jobs */}
+            {(job.status === 'failed' || job.status === 'cancelled' || job.status === 'cancel_requested') && (
+              <button
+                type="button"
+                onClick={() => {
+                  JobStore.updateJob(job.id, {
+                    status: 'queued',
+                    retryNotBefore: undefined,
+                    error: undefined,
+                    statusMessage: 'Retrying analysis...'
+                  });
+                }}
+                className="px-3 py-1.5 text-xs font-bold text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-950/20 rounded-xl transition-all flex items-center gap-1 cursor-pointer"
+              >
+                <RotateCcw className="w-3.5 h-3.5" />
+                Retry
+              </button>
+            )}
+
+            {/* Cancel Button for Active Jobs */}
+            {(job.status === 'queued' || job.status === 'running' || job.status === 'processing' || job.status === 'awaiting_user') && (
+              <button
+                type="button"
+                onClick={() => onCancel(job.id)}
+                className="px-3 py-1.5 text-xs font-bold text-amber-600 hover:bg-amber-50 dark:hover:bg-amber-950/20 rounded-xl transition-all flex items-center gap-1 cursor-pointer"
+              >
+                <XCircle className="w-3.5 h-3.5" />
+                Cancel
+              </button>
+            )}
+
+            {/* Delete (Trash) Button: Always available for all jobs */}
+            <button
+              type="button"
+              onClick={() => onDelete(job.id)}
+              className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/20 rounded-full transition-all cursor-pointer"
+              title="Delete task"
+            >
+              <Trash2 className="w-4 h-4" />
+            </button>
           </div>
         </div>
       </div>

@@ -1,6 +1,6 @@
 # Health Cockpit — Master AI Handover (WIP status board)
 
-**Last updated:** 2026-08-09 (agent governance + domain regression suites; ship via Studio pack M20)  
+**Last updated:** 2026-08-09 (portion clarify workflow + JobQueueRunner awaiting_user status fix; 30 test files / 243 unit tests PASS)  
 **Source of truth code intent:** https://github.com/cwahli/Health-tracker-6  
 **Tree of truth for product completeness:** **Desktop** working tree until Slice 0 / governance ship lands on origin.  
 **Always `git fetch` + re-audit before a session.**
@@ -182,6 +182,18 @@ Complete. Not the master focus of this handover.
 
 - 2026-08-09: Agent governance + domain rulebooks + sync/biomarker/food regression tests prepared on Desktop. Ship path = M20 via AI Studio.
 - 2026-08-09: Verified `node scripts/assert-agent-governance.mjs` (exit 0), all 87 vitest regression tests (passed), `tsc --noEmit` (clean), and `compile_applet` (succeeded).
+- 2026-08-09: Bug Tracker & Snapshot overhaul completed:
+  1. Mobile screenshot viewport positioning with scroll translation (`window.scrollX`/`window.scrollY`).
+  2. Immediate modal opening flow on snapshot FAB click (open -> brief hide -> capture -> reopen).
+  3. Multi-image selection support for bug snapshot attachments.
+  4. Automatic page/category preselection based on active tab.
+  5. Interactive bug tag problem viewer showing previously identified problems and open items.
+  6. Cleaned up Capture Pack UI text.
+  7. Interactive data-sharing checkboxes (a11y tree, overview & logs, session data, photos, nutrient calculation, debug JSON) controlling exported payload.
+  8. Prominent console and network error buffer capture in snapshot payloads.
+  9. Fixed "View Status" button in Bug Tracker modal to reliably trigger status view.
+  10. Refined error detection in Log History so non-fatal log lines containing "error" don't display as "Failed processing".
+  11. Fixed Zip Export to generate complete archives containing `bug_summary.md`, `overview.md`, `accessibility_tree.txt`, calculation JSON, and all screenshots with R2/payload fallbacks.
 - Plan snapshots (`STATUS_CONSOLIDATED`, REMAINING_ROADMAP) dated 2026-08-08 — verify before acting.
 
 ---

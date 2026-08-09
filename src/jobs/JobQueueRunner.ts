@@ -152,6 +152,12 @@ class JobQueueRunnerImpl {
     try {
       await this.executor(job, controller.signal);
       
+      const currentJobState = JobStore.getJob(job.id);
+      if (currentJobState?.status === 'awaiting_user') {
+        this.consecutiveFailures = 0;
+        return;
+      }
+
       JobStore.updateJob(job.id, {
         status: 'succeeded',
         finishedAt: new Date().toISOString(),

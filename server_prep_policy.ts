@@ -82,6 +82,7 @@ export interface PrepPolicyInput {
   diningEnvironment?: string;
   hasSauceOrDressing?: boolean;
   proteinMassGrams?: number | null;
+  dbSource?: string | null;
 }
 
 export interface PrepAddition {
@@ -97,6 +98,11 @@ export function decidePrepAddition(input: PrepPolicyInput): PrepAddition {
 
   if (input.weightGrams <= 0) {
     return { ...zeroPrep, reason: 'zero_weight' };
+  }
+
+  const isWholeFood = input.physicalForm === 'SOLID_FRUIT_VEG' || input.dbSource === 'canonical_dict';
+  if (isWholeFood) {
+    return { ...zeroPrep, reason: 'raw_whole_food' };
   }
 
   const rawMethod = (input.cookingMethod || 'unknown').toLowerCase();
@@ -170,7 +176,7 @@ export function decidePrepAddition(input: PrepPolicyInput): PrepAddition {
     effectiveWeight,
     input.visualSheen ?? 0.5,
     input.visualCoating ?? 0.5,
-    input.diningEnvironment || 'casual_restaurant',
+    input.diningEnvironment || 'unknown',
     isUserExplicit ? false : itemAlreadyPrep,
     input.hasSauceOrDressing ?? false
   );
