@@ -5871,13 +5871,21 @@ function parseServingSizeGrams(ssVal: string, totalItemWeight: number): number {
       
       const isFuzzyMatch = (m: any) => {
         if (!m || Number(m.calories) <= 0) return false;
-        
+
         // Reject incomplete garbage matches (like web search parsing errors) that lack basic macros.
         // A valid match should have at least 2 macros explicitly parsed (even if the value is 0).
-        const hasP = m.protein !== undefined && m.protein !== null;
-        const hasC = (m.carbohydrates !== undefined && m.carbohydrates !== null) || (m.carbs !== undefined && m.carbs !== null);
-        const hasF = (m.fat !== undefined && m.fat !== null) || (m.totalFat !== undefined && m.totalFat !== null);
-        if ((hasP ? 1 : 0) + (hasC ? 1 : 0) + (hasF ? 1 : 0) < 2) return false;
+        // EXEMPT brand_official (your own curated restaurant menu DB) from this check — those are
+        // trusted structured records, not noisy scraped web text. A calories-only brand menu entry
+        // is legitimate partial truth: it gets locked as truth and the rest is backfilled by the
+        // existing Truth Data Backfill step further down, the same way it already works when a
+        // brand record happens to have 0-placeholder macros instead of missing ones.
+        const isTrustedCuratedSource = m.source === 'brand_official' || m.brandPriority;
+        if (!isTrustedCuratedSource) {
+          const hasP = m.protein !== undefined && m.protein !== null;
+          const hasC = (m.carbohydrates !== undefined && m.carbohydrates !== null) || (m.carbs !== undefined && m.carbs !== null);
+          const hasF = (m.fat !== undefined && m.fat !== null) || (m.totalFat !== undefined && m.totalFat !== null);
+          if ((hasP ? 1 : 0) + (hasC ? 1 : 0) + (hasF ? 1 : 0) < 2) return false;
+        }
 
         const mNameNorm = normalizeFoodStr(m.name || '');
         

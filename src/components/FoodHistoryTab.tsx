@@ -979,6 +979,7 @@ export default function FoodHistoryTab({
                         JobStore.updateJob(id, { status: 'cancelled' });
                       } else if (j.status === 'running') {
                         j.abortController?.abort();
+                        JobStore.updateJob(id, { status: 'cancelled' });
                       }
                     }
                   }}
