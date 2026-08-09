@@ -320,6 +320,12 @@ export default function TaskPlaceholderCard({
             <h4 className="text-sm font-bold text-theme-text-primary truncate">
               {displayTitle}
             </h4>
+
+            {(job.status === 'running' || job.status === 'processing' || job.status === 'queued') && (
+              <p className="text-xs text-theme-text-secondary font-medium mt-1">
+                {job.statusMessage || 'Analyzing your meal...'}
+              </p>
+            )}
             
             {(job.status === 'running' || job.status === 'processing') && (
               <div className="w-full bg-slate-100 dark:bg-slate-800 h-1 rounded-full overflow-hidden mt-1.5">

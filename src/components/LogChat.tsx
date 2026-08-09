@@ -2580,10 +2580,32 @@ ${logsText}`);
         }
 
         // Keep modal open, append messages to local React state
+        let liveContent = 'Analyzing your meal in the background...';
+        if (extraOptions?.portionChoices && typeof extraOptions.portionChoices === 'object') {
+          const choices = extraOptions.portionChoices;
+          const items = extraOptions.scoutItems || scoutItemsForJob || [];
+          const parts: string[] = [];
+          Object.entries(choices).forEach(([key, value]) => {
+            const idx = Number(key);
+            const matchedItem = !isNaN(idx) ? items[idx] : items.find((i: any) => i.id === key || i.name === key);
+            const itemName = matchedItem?.name || matchedItem?.label || matchedItem?.displayName || matchedItem?.originalName || matchedItem?.description;
+            if (itemName) {
+              parts.push(`"${value}g portion" of ${itemName}`);
+            } else {
+              parts.push(`"${value}g portion"`);
+            }
+          });
+          if (parts.length > 0) {
+            liveContent = `Adjusting for ${parts.join(', ')}...`;
+          } else {
+            liveContent = 'Adjusting portion sizes...';
+          }
+        }
+
         const liveMsg: ChatMessage = {
           id: `msg_live_${currentJobId}`,
           role: 'assistant',
-          content: 'Analyzing your meal in the background...',
+          content: liveContent,
           timestamp: new Date().toISOString(),
           isLive: true,
           agentType: 'food',

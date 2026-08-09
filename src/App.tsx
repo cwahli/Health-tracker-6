@@ -1123,7 +1123,7 @@ export default function App() {
 
                   // B6c — short status strip while full clarify question stays in the assistant bubble
                   const portionStatusMsg = 'Waiting for portion choice';
-                  const userMsgs = (job.messages || []).filter((m) => m.role === 'user');
+                  const nonLiveMsgs = (job.messages || []).filter((m) => !m.isLive);
                   const clarifyAssistant = {
                     id: `msg_assistant_clarify_${job.id}`,
                     role: 'assistant',
@@ -1150,7 +1150,7 @@ export default function App() {
                     statusMessage: portionStatusMsg,
                     progressPercent: serverJob.progress_percent || 45,
                     result: cleanResult,
-                    messages: [...userMsgs, clarifyAssistant],
+                    messages: [...nonLiveMsgs, clarifyAssistant],
                     photoUrl: serverJob.photo_url || cleanResult.photoUrl,
                     debugUrl: serverJob.debug_url || cleanResult.debugUrl,
                   });
@@ -1179,7 +1179,7 @@ export default function App() {
                     ...(cleanResult.agentResult || {}),
                   };
 
-                  const userMsgs = (job.messages || []).filter((m) => m.role === 'user');
+                  const nonLiveMsgs = (job.messages || []).filter((m) => !m.isLive);
                   const assistantMsg = {
                     id: `msg_assistant_${job.id}`,
                     role: 'assistant',
@@ -1198,7 +1198,7 @@ export default function App() {
                       agentResult,
                     },
                   };
-                  const updatedMessages = [...userMsgs, assistantMsg];
+                  const updatedMessages = [...nonLiveMsgs, assistantMsg];
                   JobStore.updateJob(job.id, {
                     status: 'succeeded',
                     result: { ...cleanResult, pendingFoodLog, photoUrl: serverJob.photo_url || cleanResult.photoUrl, debugUrl: serverJob.debug_url || cleanResult.debugUrl },
@@ -1261,7 +1261,7 @@ export default function App() {
 
                   // Keep a non-live assistant bubble + full logs so the run doesn't "vanish"
                   const pendingFoodLog = cleanResult.pendingFoodLog || cleanResult.data || null;
-                  const userMsgs = (job.messages || []).filter((m) => m.role === 'user');
+                  const nonLiveMsgs = (job.messages || []).filter((m) => !m.isLive);
                   const failAssistant = {
                     id: `msg_assistant_fail_${job.id}`,
                     role: 'assistant',
@@ -1288,7 +1288,7 @@ export default function App() {
                     finishedAt: new Date().toISOString(),
                     error: { class: 'transient', message: failMsg },
                     result: { ...cleanResult, pendingFoodLog, backendLogs: rawLogs },
-                    messages: [...userMsgs, failAssistant],
+                    messages: [...nonLiveMsgs, failAssistant],
                     debugUrl: serverJob.debug_url || cleanResult.debugUrl,
                   });
                   done = true;
@@ -1315,7 +1315,7 @@ export default function App() {
                 const cleanResult = lateJob.clean_result || {};
                 const pendingFoodLog = cleanResult.pendingFoodLog || cleanResult.data || null;
                 const messageText = cleanResult.message || cleanResult.text || pendingFoodLog?.message || 'Analysis complete.';
-                const userMsgs = (job.messages || []).filter((m) => m.role === 'user');
+                const nonLiveMsgs = (job.messages || []).filter((m) => !m.isLive);
                 const assistantMsg = {
                   id: `msg_assistant_${job.id}`,
                   role: 'assistant',
@@ -1339,7 +1339,7 @@ export default function App() {
                 JobStore.updateJob(job.id, {
                   status: 'succeeded',
                   result: { ...cleanResult, pendingFoodLog },
-                  messages: [...userMsgs, assistantMsg],
+                  messages: [...nonLiveMsgs, assistantMsg],
                   progressPercent: 100,
                   statusMessage: 'Analysis complete (recovered after poll window)',
                   finishedAt: new Date().toISOString(),
@@ -1371,7 +1371,7 @@ export default function App() {
                   summary: `Failed: ${job.kind || 'Food Log'}`,
                   logs: logsList,
                 });
-                const userMsgs = (job.messages || []).filter((m) => m.role === 'user');
+                const nonLiveMsgs = (job.messages || []).filter((m) => !m.isLive);
                 JobStore.updateJob(job.id, {
                   status: 'failed',
                   statusMessage: failMsg,
@@ -1379,7 +1379,7 @@ export default function App() {
                   error: { class: 'transient', message: failMsg },
                   result: cleanResult,
                   messages: [
-                    ...userMsgs,
+                    ...nonLiveMsgs,
                     {
                       id: `msg_assistant_fail_${job.id}`,
                       role: 'assistant',
@@ -1414,7 +1414,7 @@ export default function App() {
                   : [{ timestamp: new Date().toISOString(), message: `[error] ${timeoutMsg}` }],
               });
 
-              const userMsgs = (job.messages || []).filter((m) => m.role === 'user');
+              const nonLiveMsgs = (job.messages || []).filter((m) => !m.isLive);
               JobStore.updateJob(job.id, {
                 status: 'failed',
                 statusMessage: timeoutMsg,
@@ -1425,7 +1425,7 @@ export default function App() {
                   message: timeoutMsg,
                 },
                 messages: [
-                  ...userMsgs,
+                  ...nonLiveMsgs,
                   {
                     id: `msg_assistant_timeout_${job.id}`,
                     role: 'assistant',

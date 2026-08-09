@@ -45,6 +45,22 @@ export async function submitServerJob(payload: ServerJobPayload): Promise<void> 
   const dbKind = kind || 'food_log';
   const dbMode = mode || 'review';
 
+  let initialStatusMessage = 'Starting cloud food analysis...';
+  if (payload.portionChoices && typeof payload.portionChoices === 'object' && Array.isArray(payload.activeScoutItems)) {
+    const parts: string[] = [];
+    Object.entries(payload.portionChoices).forEach(([key, value]) => {
+      const idx = Number(key);
+      const matchedItem = !isNaN(idx) ? payload.activeScoutItems[idx] : payload.activeScoutItems.find((i: any) => i.id === key || i.name === key || i.keyword === key);
+      const itemName = matchedItem?.originalName || matchedItem?.name || matchedItem?.keyword || matchedItem?.description || 'Item';
+      parts.push(`"${value}g portion" of ${itemName}`);
+    });
+    if (parts.length > 0) {
+      initialStatusMessage = `Adjusting for ${parts.join(', ')}...`;
+    } else {
+      initialStatusMessage = 'Adjusting portion sizes...';
+    }
+  }
+
   // In-memory record for offline / Supabase-unconfigured environments
   const initialJobRecord = {
     id: jobId,
@@ -53,7 +69,7 @@ export async function submitServerJob(payload: ServerJobPayload): Promise<void> 
     mode: dbMode,
     status: 'running',
     progress_percent: 5,
-    status_message: 'Starting cloud food analysis...',
+    status_message: initialStatusMessage,
     updated_at: new Date().toISOString()
   };
   inMemoryServerJobs.set(jobId, initialJobRecord);
@@ -119,7 +135,11 @@ export async function submitServerJob(payload: ServerJobPayload): Promise<void> 
         photoUrl = await uploadPhotoToR2(jobId, images[0]);
       }
 
-      await updateSupabaseProgress(15, 'Vision Scout starting...');
+      if (payload.portionChoices) {
+        await updateSupabaseProgress(15, initialStatusMessage);
+      } else {
+        await updateSupabaseProgress(15, 'Vision Scout starting...');
+      }
 
       // Prepare request body for loopback / in-process execution
       const port = process.env.PORT || 3000;
