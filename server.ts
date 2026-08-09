@@ -22,6 +22,7 @@ import {
 import { attachHappyPathMealBuild, markDietitianDegraded, buildSavableMealFromParsed } from './server_meal_orchestrator.js';
 import { toPendingFoodLog, fromEvaluationComparison } from './src/mealBuild/adapters.js';
 import { projectDietitianInput } from './src/mealBuild/projectors.js';
+import { beginStage, endStage, formatDietitianProjectionBlock } from './src/mealBuild/stageLifecycle.js';
 import {
   detectWeightRefineIntent,
   shouldSkipScoutForWeightRefine,
@@ -7592,7 +7593,7 @@ function parseServingSizeGrams(ssVal: string, totalItemWeight: number): number {
       ? `\n\nIf MODE D (evaluation/comparison) applies: reference every item ONLY by its Index number from the Scout list above inside "scoutItemIndices". Every Index must be assigned to at least one group — including duplicate-named items, which are still separate indices. You are allowed to map the same Scout Index to multiple groups if a physical shelf contains items belonging to both categories. Do not restate names, bounding boxes, or database IDs.`
       : ``;
 
-    const promptText = (customVariableData 
+    let promptText = (customVariableData 
       ? `${customVariableData}\n${biomarkersCtx}\n${visionScoutCtx}\n${databaseMatchesCtx}\nCurrent User Input: "${message}"`
       : `${historyContext}${pastMealsCtx}Analyze this current food request.
 ${userCtx}
@@ -7711,8 +7712,19 @@ Current User Input: "${message}"`) + modeDPromptSuffix;
     }
 
     addDebugLog('[MealBuild] projector dietitian');
-    const dietitianTempMeal = buildSavableMealFromParsed(preCalculatedItems || [], activeMeal, aggregatedNutrients, null);
+    let dietitianTempMeal = buildSavableMealFromParsed(preCalculatedItems || [], activeMeal, aggregatedNutrients, null);
+    const lifeStart = beginStage(dietitianTempMeal, 'dietitian', { actor: 'server' });
+    if (!lifeStart.allowed) {
+      addDebugLog(`[MealBuild] stage-limits: ${lifeStart.limitReason}`);
+    } else {
+      addDebugLog('[MealBuild] stage dietitian started');
+    }
     const dietitianProjection = projectDietitianInput(dietitianTempMeal, userProfile);
+
+    const precalcBlock = formatDietitianProjectionBlock(dietitianProjection);
+    addDebugLog('[MealBuild] projector dietitian applied');
+    promptText = `${promptText}\n\n${precalcBlock}`;
+    fullPromptSent = `${fullPromptSent}\n\n${precalcBlock}`;
 
     const llmCallArgs = {
       modelId: (typeof engine === 'object' ? engine?.name || engine?.model : engine) || "gemini-3.5-flash-lite", // Updating to flash-lite as recommended
@@ -7906,12 +7918,12 @@ Current User Input: "${message}"`) + modeDPromptSuffix;
       comparisonData.groups = applyServerAverageNutrients(resolvedGroups, preCalcByScoutIndex);
       comparisonData.isMenuScale = isMenuScale;
       
-      addDebugLog('[MealBuild] mode=D');
+      addDebugLog('[MealBuild] mode=D stream');
       const comparisonSet = fromEvaluationComparison(comparisonData, visionScoutItems, {
         id: req.body.jobId || `cmp_${Date.now()}`,
       });
 
-      return res.json({
+      const responsePayload = {
         mode: "evaluation",
         dietitianScratchpad: rawParsed._internalReasoning,
         comparison: comparisonData,
@@ -7922,7 +7934,14 @@ Current User Input: "${message}"`) + modeDPromptSuffix;
         message: rawParsed.message,
         text: rawParsed.message,
         apiCalls
-      });
+      };
+
+      if (isStream && hasSentHeaders) {
+        res.write(`data: ${JSON.stringify({ final: true, result: responsePayload })}\n\n`);
+        return res.end();
+      }
+
+      return res.json(responsePayload);
     }
 
     if (originalModeIsModify && rawParsed.foodData && rawParsed.foodData.itemsBreakdown && rawParsed.foodData.itemsBreakdown.length > 0) {
@@ -9677,14 +9696,33 @@ Current User Input: "${message}"`) + modeDPromptSuffix;
         }
       }
 
-      return res.json({
+      addDebugLog('[MealBuild] edit-path');
+      const { mealBuild, pendingFoodLog } = attachHappyPathMealBuild({
+        parsedData: activeMeal,
+        jobId: req.body.jobId,
+        activeMeal: req.body.activeMeal,
+        diningEnvironment: activeMeal?.diningEnvironment,
+      });
+
+      mealBuild.staleDietitianNarrative = true;
+
+      const responsePayload = {
         mode: "modify",
         text: rawParsed.message || "I have recalculated your meal's metrics with precision based on your instructions.",
         message: rawParsed.message || "I have recalculated your meal's metrics with precision based on your instructions.",
-        data: activeMeal,
+        data: pendingFoodLog || activeMeal,
+        mealBuild,
+        savable: true,
         agentPrompt: fullPromptSent,
         apiCalls
-      });
+      };
+
+      if (isStream && hasSentHeaders) {
+        res.write(`data: ${JSON.stringify({ final: true, result: responsePayload })}\n\n`);
+        return res.end();
+      }
+
+      return res.json(responsePayload);
     }
   } catch (error: any) {
     console.error("[Food Analyze Error]:", error);

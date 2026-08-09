@@ -5,3 +5,5 @@ export * from './consolidate';
 export * from './adapters';
 export * from './projectors';
 export * from './reflection';
+export * from './stageLifecycle';
+export * from './coldDebug';

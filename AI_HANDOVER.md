@@ -181,6 +181,14 @@ Complete. Not the master focus of this handover.
 **Do not** edit `AGENTS.md` / `docs/agent/**` without confirmation + before→after.
 
 ### Session notes (multi-agent — append short bullets)
+- 2026-08-09: Completed M22 Meal Build True Complete (`studio/M22_MEAL_BUILD_TRUE_COMPLETE.md`):
+  - Hard gate `scripts/assert-meal-build-m22.mjs` passed (exit 0).
+  - Applied live `projectDietitianInput` block to dietitian LLM prompt (`promptText`).
+  - Added `attachHappyPathMealBuild` on edit/modify math fallback path with `staleDietitianNarrative: true`.
+  - Upgraded Mode D evaluation route to safely stream `comparisonSet` (SSE payload format).
+  - Wired `stageLifecycle.ts` tracking (`beginStage`, `endStage`) for `dietitian` with StageLimits circuit breaker.
+  - Implemented `coldDebug.ts` package generator for R2 forensics and integrated into debug payload views.
+  - Verified M22 chaos tests, M21.1 completion tests, food-calc tests, and TypeScript compiler output (all zero errors).
 - 2026-08-09: Completed M21.1 Meal Build Completion (`studio/M21_1_MEAL_BUILD_COMPLETION_GATES.md`):
   - Hard gate `scripts/assert-meal-build-m21-1.mjs` passed (exit 0).
   - Wired `attachHappyPathMealBuild` on `new_log` success path in `server.ts`.
