@@ -193,7 +193,8 @@ export interface NutrientBreakdown {
   unsaturatedFat: number;  // g
   omega3: number;          // g
   carbohydrates: number;   // g
-  addedSugar: number;      // g
+  sugar?: number;          // g, total sugar (natural + added)
+  addedSugar?: number;     // g
   totalFibre: number;      // g
   solubleFibre: number;    // g
   sodium: number;          // mg

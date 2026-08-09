@@ -11,6 +11,7 @@ import {
   applyNutrientRealityChecks,
   backfillSolubleFibre
 } from "./server_pure_helpers";
+import { deduceSugarBreakdown } from "./server_sugar_engine";
 
 export function cleanNutrientNumber(val: any): number {
   if (val === null || val === undefined || isNaN(Number(val))) return 0;
@@ -131,6 +132,7 @@ export function aggregateItemsNutrients(
       const portionBaseTransFat = Math.round((raw100.transFat || 0) * baseFactor * 10) / 10;
       const portionBaseNa = Math.round((raw100.sodium || 0) * baseFactor);
       const portionBaseCarbs = Math.round((raw100.carbohydrates || 0) * baseFactor * 10) / 10;
+      const portionBaseTotalSugar = Math.round((raw100.sugar !== undefined ? raw100.sugar : 0) * baseFactor * 10) / 10;
       const portionBaseSugar = Math.round((raw100.addedSugar !== undefined ? raw100.addedSugar : 0) * baseFactor * 10) / 10;
       const portionBaseK = Math.round((raw100.potassium || 0) * baseFactor);
       const portionBaseFibre = Math.round((raw100.totalFibre !== undefined ? raw100.totalFibre : (raw100.fiber !== undefined ? raw100.fiber : (raw100.fibre !== undefined ? raw100.fibre : 0))) * baseFactor * 10) / 10;
@@ -148,6 +150,7 @@ export function aggregateItemsNutrients(
       let sumTransFat = portionBaseTransFat;
       let sumNa = portionBaseNa;
       let sumCarbs = portionBaseCarbs;
+      let sumTotalSugar = portionBaseTotalSugar;
       let sumSugar = portionBaseSugar;
       let sumK = portionBaseK;
       let sumFibre = portionBaseFibre;
@@ -163,6 +166,7 @@ export function aggregateItemsNutrients(
           const sTransFat = Math.round((s.transFat || 0) * scaleRatio * 10) / 10;
           const sNa = Math.round((s.sodium || 0) * scaleRatio);
           const sCarbs = Math.round((s.carbohydrates || 0) * scaleRatio * 10) / 10;
+          const sTotalSugar = Math.round((s.sugar || 0) * scaleRatio * 10) / 10;
           const sSugar = Math.round((s.addedSugar || 0) * scaleRatio * 10) / 10;
           const sK = Math.round((s.potassium || 0) * scaleRatio);
           const sFibre = Math.round((s.totalFibre || s.fiber || 0) * scaleRatio * 10) / 10;
@@ -175,6 +179,7 @@ export function aggregateItemsNutrients(
           sumTransFat += sTransFat;
           sumNa += sNa;
           sumCarbs += sCarbs;
+          sumTotalSugar += sTotalSugar;
           sumSugar += sSugar;
           sumK += sK;
           sumFibre += sFibre;
@@ -244,7 +249,18 @@ export function aggregateItemsNutrients(
       itemNutrients.transFat = parseFloat(sumTransFat.toFixed(2));
       itemNutrients.sodium = sumNa;
       itemNutrients.carbohydrates = parseFloat(sumCarbs.toFixed(2));
-      itemNutrients.addedSugar = parseFloat(sumSugar.toFixed(2));
+      {
+        const sugarResult = deduceSugarBreakdown({
+          totalSugar: sumTotalSugar > 0 ? sumTotalSugar : sumSugar,
+          addedSugarPrinted: null,
+          carbohydrates: sumCarbs,
+          totalFibre: sumFibre,
+          physicalForm: item.physicalFormClassification?.physicalForm,
+          ingredientsList: item.ingredientsList,
+        });
+        itemNutrients.sugar = sugarResult.sugar;
+        itemNutrients.addedSugar = sugarResult.addedSugar;
+      }
       itemNutrients.potassium = sumK;
       itemNutrients.totalFibre = parseFloat(sumFibre.toFixed(2));
       itemNutrients.solubleFibre = parseFloat(sumSolubleFibre.toFixed(2));
@@ -419,7 +435,20 @@ export function aggregateItemsNutrients(
       itemNutrients.totalFat = parseFloat((itemNutrients.saturatedFat + itemNutrients.transFat).toFixed(2));
     }
     itemNutrients.unsaturatedFat = parseFloat(Math.max(0, itemNutrients.totalFat - itemNutrients.saturatedFat - itemNutrients.transFat).toFixed(2));
+    if (itemNutrients.sugar || itemNutrients.addedSugar) {
+      const sugarResult = deduceSugarBreakdown({
+        totalSugar: itemNutrients.sugar || itemNutrients.addedSugar || 0,
+        addedSugarPrinted: labelData?.addedSugar != null ? Number(labelData.addedSugar) : null,
+        carbohydrates: itemNutrients.carbohydrates,
+        totalFibre: itemNutrients.totalFibre,
+        physicalForm: item.physicalFormClassification?.physicalForm,
+        ingredientsList: item.ingredientsList,
+      });
+      itemNutrients.sugar = sugarResult.sugar;
+      itemNutrients.addedSugar = sugarResult.addedSugar;
+    }
     itemNutrients.addedSugar = itemNutrients.addedSugar || 0;
+    itemNutrients.sugar = itemNutrients.sugar || 0;
     itemNutrients.totalFibre = Math.max(0, itemNutrients.totalFibre || itemNutrients.fiber || itemNutrients.fibre || itemNutrients.serat || 0);
 
     // Force locked truth nutrients for the individual item BEFORE clean precision clamp.

@@ -46,7 +46,7 @@ export const ComprehensiveNutrientsTable: React.FC<{
 
   const coreKeys = [
     "calories", "protein", "carbohydrates", "totalFat", "saturatedFat", 
-    "transFat", "addedSugar", "sodium", "potassium", "totalFibre", "solubleFibre"
+    "transFat", "sugar", "addedSugar", "sodium", "potassium", "totalFibre", "solubleFibre"
   ];
 
   const coreNutrients = nutrientDefinitions.filter(nut => coreKeys.includes(nut.key));

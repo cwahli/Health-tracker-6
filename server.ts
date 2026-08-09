@@ -69,7 +69,8 @@ export function extractOFFNutrientsPer100g(product: any): Record<string, number>
   
   setNum("omega3", "omega-3_100g");
   setNum("carbohydrates", "carbohydrates_100g");
-  setNum("addedSugar", "sugars_100g");
+  setNum("sugar", "sugars_100g");
+  setNum("addedSugar", "added_sugars_100g");
   setNum("totalFibre", "fiber_100g");
   setNum("solubleFibre", "soluble-fiber_100g");
   
@@ -4305,7 +4306,8 @@ app.post("/api/gemini/food-analyze", async (req, res) => {
       
       setNum("omega3", "omega-3_100g");
       setNum("carbohydrates", "carbohydrates_100g");
-      setNum("addedSugar", "sugars_100g");
+      setNum("sugar", "sugars_100g");
+      setNum("addedSugar", "added_sugars_100g");
       setNum("totalFibre", "fiber_100g");
       setNum("solubleFibre", "soluble-fiber_100g");
       
@@ -5703,6 +5705,10 @@ function parseServingSizeGrams(ssVal: string, totalItemWeight: number): number {
           // When printed sugar is present and addedSugar is not, use sugar as the locked
           // addedSugar proxy so sweetened pots do not show 0g (see Co-op granola yogurt).
           const sugarScaled = presentOrNull(['sugar', 'sugars', 'ofWhichSugars', 'of_which_sugars', 'totalsugars']);
+          // Only trust addedSugar here if the label literally printed a distinct "Added Sugars" line
+          // (US FDA format). UK/EU "of which sugars" is Total Sugar, not Added Sugar — do NOT
+          // fall back to sugarScaled here. Leave addedSugar null when unprinted; the sugar engine
+          // (server_sugar_engine.ts) derives it downstream from food type / ingredients / lactose rules.
           const addedSugarScaled = presentOrNull(['addedSugar', 'added_sugar', 'addedSugars', 'addedsugars']);
           truthMatch = {
             source: 'label',
@@ -5720,7 +5726,7 @@ function parseServingSizeGrams(ssVal: string, totalItemWeight: number): number {
             transFat: presentOrNull(['transFat', 'trans_fat', 'trans']),
             potassium: presentOrNull(['potassium', 'k']),
             sugar: sugarScaled,
-            addedSugar: addedSugarScaled != null ? addedSugarScaled : sugarScaled,
+            addedSugar: addedSugarScaled,
             ingredients: item.ingredientsList
           };
         }
@@ -5905,7 +5911,8 @@ function parseServingSizeGrams(ssVal: string, totalItemWeight: number): number {
         mapField('carbohydrates', ['carbohydrates', 'carbs', 'totalCarbohydrate']);
         mapField('sodium', ['sodium']);
         mapField('totalFibre', ['totalFibre', 'fiber']);
-        mapField('addedSugar', ['addedSugar', 'sugar']);
+        mapField('sugar', ['sugar']);
+        mapField('addedSugar', ['addedSugar']);
         mapField('potassium', ['potassium']);
         mapField('transFat', ['transFat']);
         

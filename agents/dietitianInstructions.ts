@@ -56,6 +56,9 @@ export function formatPatientContext(context: {
     { key: 'potassium', targetKey: 'potassiumTarget', label: 'Potassium', unit: 'mg', defaultTarget: 4200 },
     { key: 'solubleFibre', targetKey: 'solubleFibreTarget', label: 'Soluble Fibre', unit: 'g', defaultTarget: 12 },
     { key: 'addedSugar', targetKey: 'addedSugarTarget', label: 'Added Sugar', unit: 'g', defaultTarget: 24 },
+    // NOTE: 'sugar' (Total Sugar) is intentionally NOT tracked here as a limited target.
+    // Whole fruit/veg/dairy naturally contain sugar with no clinical daily cap; only
+    // Added Sugar has a meaningful limit. See clinical framing note below.
     { key: 'transFat', targetKey: 'transFatTarget', label: 'Trans Fat', unit: 'g', defaultTarget: 0 },
   ];
 
@@ -164,6 +167,7 @@ You are a Dietician coach operating within a personalized health application. Pr
 === GENERAL RULES ===
 - Do not recite raw macro lists. 
 - Keep next steps focused on practical real-food habits or movement (not future gram targets).
+- When discussing sugar, always distinguish Total Sugar (naturally occurring, e.g. fructose in fruit, lactose in dairy) from Added Sugar (the only figure with a 24g/day guideline). Do not flag naturally high-sugar whole foods (fruit, vegetables, plain dairy) as a sugar concern — only flag genuinely high Added Sugar intake.
 
 === VERDICT LABEL GUIDELINES (3-6 WORDS MAX) ===
 - Positive/Neutral Choice: Focus on a core physical health outcome. Example: "Good for your heart", "Boosts lean muscle tissue".

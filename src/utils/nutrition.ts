@@ -17,6 +17,7 @@ export const nutrientDefinitions: NutrientMeta[] = [
   { key: 'unsaturatedFat', category: 'macro', unit: 'g', labels: { en: 'Unsaturated Fat', fr: 'Acides Gras Insaturés', zh: '不饱和脂肪', id: 'Lemak Tak Jenuh' } },
   { key: 'omega3', category: 'macro', unit: 'g', labels: { en: 'Omega-3', fr: 'Oméga-3', zh: 'Omega-3 脂肪酸', id: 'Omega-3' } },
   { key: 'carbohydrates', category: 'macro', unit: 'g', labels: { en: 'Carbohydrates', fr: 'Glucides', zh: '碳水化合物', id: 'Karbohidrat' } },
+  { key: 'sugar', category: 'macro', unit: 'g', labels: { en: 'Total Sugar', fr: 'Sucre Total', zh: '总糖量', id: 'Gula Total' } },
   { key: 'addedSugar', category: 'macro', unit: 'g', labels: { en: 'Added Sugar', fr: 'Sucres Ajoutés', zh: '添加糖', id: 'Gula Tambahan' } },
   { key: 'totalFibre', category: 'macro', unit: 'g', labels: { en: 'Total Fibre', fr: 'Fibres Totales', zh: '膳食纤维总量', id: 'Serat Total' } },
   { key: 'solubleFibre', category: 'macro', unit: 'g', labels: { en: 'Soluble Fibre', fr: 'Fibres Solubles', zh: '可溶性膳食纤维', id: 'Serat Larut' } },
@@ -55,6 +56,7 @@ export const MASTER_NUTRIENT_COLORS: { [key: string]: string } = {
   unsaturatedFat: 'rgb(132, 204, 22)', // Lime
   totalFat: 'var(--color-nutrient-totalFat, rgb(168, 85, 247))',       // Purple
   sodium: 'var(--color-nutrient-sodium, rgb(34, 197, 94))',          // Emerald/Green
+  sugar: 'rgb(244, 114, 182)',         // Light Pink/Rose
   addedSugar: 'rgb(239, 68, 68)',      // Bright Red
   protein: 'var(--color-nutrient-protein, rgb(59, 130, 246))',        // Blue
   carbohydrates: 'var(--color-nutrient-carbohydrates, rgb(6, 182, 212))',   // Cyan

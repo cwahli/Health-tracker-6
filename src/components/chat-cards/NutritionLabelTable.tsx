@@ -165,6 +165,7 @@ export function NutritionLabelTable({ activeScoutItems, onConfirmItem, defaultOp
             saturatedFat: source.saturatedFat != null ? `${source.saturatedFat}g` : undefined,
             totalCarbohydrate: (source.totalCarbohydrate ?? source.carbohydrates ?? source.carbs) != null ? `${source.totalCarbohydrate ?? source.carbohydrates ?? source.carbs}g` : undefined,
             sugar: source.sugar != null ? `${source.sugar}g` : (source.addedSugar != null ? `${source.addedSugar}g` : undefined),
+            addedSugar: source.addedSugar != null ? `${source.addedSugar}g` : undefined,
             totalFibre: (source.totalFibre ?? source.fiber) != null ? `${source.totalFibre ?? source.fiber}g` : undefined,
             sodium: source.sodium != null ? `${source.sodium}mg` : undefined,
             salt: source.salt != null ? `${source.salt}g` : undefined
@@ -435,6 +436,7 @@ export function NutritionLabelTable({ activeScoutItems, onConfirmItem, defaultOp
                             fiber: 'totalFibre',
                             fibre: 'totalFibre',
                             sugar: 'sugar',
+                            addedsugar: 'addedSugar',
                             transfat: 'transFat'
                           };
                           const normKey = standardMapping[k.toLowerCase()] || k;
