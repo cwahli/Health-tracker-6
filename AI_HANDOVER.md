@@ -181,6 +181,10 @@ Complete. Not the master focus of this handover.
 **Do not** edit `AGENTS.md` / `docs/agent/**` without confirmation + before→after.
 
 ### Session notes (multi-agent — append short bullets)
+- 2026-08-09: Completed Phase 3, 5, 6 Roadmap items from `plan/MEAL_BUILD_DURABLE_STATE.md`:
+  - Integrated `migrateMealSchema` into `storageUtils.ts` for clean client-side local storage pull schema migration.
+  - Enhanced `FoodEvaluationComparisonCard.tsx` and `TaskPlaceholderCard.tsx` to project Mode D `ComparisonSet` option meals with side-by-side macro grids and recommendations.
+  - Implemented `rebaseUserEdit` and `rebaseJobMealEdit` OCC 409 rebase logic with tombstone preservation and `staleDietitianNarrative` flags in `consolidate.ts` and `JobStore.ts`.
 - 2026-08-09: Completed Phases 2–6 of Meal Build durable state (`plan/MEAL_BUILD_DURABLE_STATE.md`). Implemented Supabase sync for `mealBuild` / `stageLedger` / `historyLog`, early R2 photo URL synchronization on client submit, Mode D multi-meal ComparisonSet summary rendering in TaskPlaceholderCard, and client-side OCC 409 rebase loop with `rebaseUserEdit` and `rebaseJobMealEdit` in JobStore. All 250 unit tests across 32 test files passing cleanly, linter zero errors, applet compiled successfully.
 - 2026-08-09: AI Studio verified and shipped M21 (Meal Build Durable State). All M21 gates passed.
 - 2026-08-09: AI Studio verified and shipped M20. All gates passed.

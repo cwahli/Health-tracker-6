@@ -18,6 +18,39 @@ export const FoodEvaluationComparisonCard: React.FC<FoodEvaluationComparisonCard
             <span className="shrink-0">{t.comparisonLabel}</span> <span className="text-indigo-600 dark:text-indigo-400 font-bold break-words">{msg.agentResult.comparison.keyNutrientConcern || t.nutrientsOfConcern}</span>
           </h4>
         </div>
+        {/* ComparisonSet Options Grid */}
+        {(msg.agentResult.comparisonSet?.optionMeals || msg.agentResult.comparison?.options) && (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mt-3">
+            {(msg.agentResult.comparisonSet?.optionMeals || msg.agentResult.comparison?.options).map((opt: any, i: number) => {
+              const name = opt.content?.name || opt.name || opt.title || `Option ${i + 1}`;
+              const calories = opt.nutrients?.calories || opt.calories || 0;
+              const protein = opt.nutrients?.protein || opt.protein || 0;
+              const carbs = opt.nutrients?.carbohydrates || opt.carbohydrates || opt.carbs || 0;
+              const fat = opt.nutrients?.fat || opt.fat || 0;
+              const rec = opt.content?.recommendation || opt.recommendation || opt.verdict || '';
+
+              return (
+                <div key={i} className="bg-slate-50 dark:bg-slate-900/60 border border-theme-border p-3 rounded-xl space-y-1.5">
+                  <div className="flex items-center justify-between font-bold text-xs text-theme-text">
+                    <span>{name}</span>
+                    <span className="text-indigo-600 dark:text-indigo-400 font-mono">{calories} kcal</span>
+                  </div>
+                  <div className="flex gap-2 text-[10px] text-theme-neutral font-mono">
+                    <span>P: {protein}g</span>
+                    <span>C: {carbs}g</span>
+                    <span>F: {fat}g</span>
+                  </div>
+                  {rec && (
+                    <p className="text-[11px] text-slate-600 dark:text-slate-300 italic pt-1 border-t border-theme-border/40">
+                      "{rec}"
+                    </p>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+
         {/* Key Nutrient Comparison Table */}
         {(msg.agentResult.comparison.comparisonTable || msg.agentResult.comparison.comparisonTableJson || msg.agentResult.comparison.comparisonTableMarkdown) && (
           <div className="border border-theme-border rounded-xl overflow-hidden bg-slate-50/30 dark:bg-slate-900/10 mt-2">

@@ -1,5 +1,6 @@
 import { get as idbGet, set as idbSet } from 'idb-keyval';
 import { UserProfile, FoodLog, BiomarkerLog, HealthAction, DailyBenefit, RecommendationReport, FoodIdea } from '../types';
+import { migrateMealSchema } from '../mealBuild';
 
 export const pruneLocalStorageToFreeSpace = () => {
   try {
@@ -237,7 +238,11 @@ export const getAggregatedAppData = async (email?: string | null): Promise<any> 
 
   // If primary key has both food logs or biomarker history, trust it completely — do NOT merge legacy keys.
   if (hasPrimaryFoods && hasPrimaryBio) {
-    return primaryData;
+    const migratedFoods = (primaryData.foodLogs || []).map((f: any) => {
+      if (f.mealBuild) return { ...f, mealBuild: migrateMealSchema(f.mealBuild) };
+      return f;
+    });
+    return { ...primaryData, foodLogs: migratedFoods };
   }
 
   // One-time migration: primary key is empty or missing data, check legacy and guest keys and migrate their data in.
