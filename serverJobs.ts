@@ -370,10 +370,27 @@ export async function submitServerJob(payload: ServerJobPayload): Promise<void> 
           memJob.updated_at = new Date().toISOString();
         }
         if (isSupabaseConfigured) {
+          let lightweightFinalData = { ...finalData };
+          try {
+            const { uploadJobResultToR2 } = await import('./src/utils/r2Storage.js');
+            const publicUrl = await uploadJobResultToR2(jobId, finalData);
+            if (publicUrl) {
+              lightweightFinalData = {
+                is_r2: true,
+                r2_url: publicUrl,
+                mode: finalData.mode || 'review',
+                text: finalData.text || '',
+                message: finalData.message || 'Please clarify portion sizes.',
+              };
+            }
+          } catch (r2Err) {
+            console.error('[ServerJobs] R2 save for portion clarify failed:', r2Err);
+          }
+
           await supabaseAdmin.from('agent_jobs').update({
             status: 'awaiting_user',
             status_message: finalData.message || 'Please clarify portion sizes.',
-            clean_result: finalData, // contains portionClarify
+            clean_result: lightweightFinalData, // contains lightweight R2 reference
             updated_at: new Date().toISOString()
           }).eq('id', jobId);
         }
@@ -385,10 +402,17 @@ export async function submitServerJob(payload: ServerJobPayload): Promise<void> 
         const foodLog = finalPayload?.pendingFoodLog || finalPayload?.data || null;
         const pendingFoodLog = foodLog || (finalPayload?.name && finalPayload?.nutrients ? finalPayload : finalPayload);
         if (pendingFoodLog && typeof pendingFoodLog === 'object') {
-          pendingFoodLog.imageUrl = photoUrl || pendingFoodLog.imageUrl;
-          if (Array.isArray(pendingFoodLog.imageUrls)) {
-            pendingFoodLog.imageUrls = photoUrl ? [photoUrl] : pendingFoodLog.imageUrls;
+          // Replace base64 strings with public R2 URL or remove them
+          if (pendingFoodLog.imageUrl && String(pendingFoodLog.imageUrl).startsWith('data:')) {
+            pendingFoodLog.imageUrl = photoUrl || '';
           }
+          if (Array.isArray(pendingFoodLog.imageUrls)) {
+            pendingFoodLog.imageUrls = pendingFoodLog.imageUrls.map((url: any) => 
+              String(url).startsWith('data:') ? (photoUrl || '') : url
+            ).filter(Boolean);
+          }
+          delete pendingFoodLog.imageBase64;
+          delete pendingFoodLog.images;
         }
 
         const cleanResult: any = {
@@ -400,7 +424,7 @@ export async function submitServerJob(payload: ServerJobPayload): Promise<void> 
           scoutItems: finalPayload?.scoutItems || undefined,
           photoUrl: photoUrl || undefined,
           debugUrl: undefined as string | undefined,
-          backendLogs: accumulatedLogs.join('\n').slice(0, 200000),
+          backendLogs: accumulatedLogs.join('\n').slice(-20000), // Keep last 20k chars for DB preview
           mealBuild: finalPayload?.mealBuild,
           degradedStages: finalPayload?.degradedStages,
         };
@@ -434,13 +458,30 @@ export async function submitServerJob(payload: ServerJobPayload): Promise<void> 
         }
 
         if (isSupabaseConfigured) {
+          let lightweightResult = { ...cleanResult };
+          try {
+            const { uploadJobResultToR2 } = await import('./src/utils/r2Storage.js');
+            const publicUrl = await uploadJobResultToR2(jobId, cleanResult);
+            if (publicUrl) {
+              lightweightResult = {
+                is_r2: true,
+                r2_url: publicUrl,
+                mode: cleanResult.mode || 'review',
+                text: cleanResult.text || '',
+                message: cleanResult.message || 'Analysis complete',
+              };
+            }
+          } catch (r2Err) {
+            console.error('[ServerJobs] R2 save for success failed:', r2Err);
+          }
+
           await supabaseAdmin.from('agent_jobs').update({
             status: 'succeeded',
             progress_percent: 100,
             status_message: 'Analysis complete',
             photo_url: photoUrl || null,
             debug_url: cleanResult.debugUrl || null,
-            clean_result: cleanResult,
+            clean_result: lightweightResult, // lightweight R2 reference in DB!
             updated_at: new Date().toISOString(),
           }).eq('id', jobId);
         }

@@ -156,81 +156,102 @@ export function initSupabaseJobSync(userId?: string): () => void {
           return;
         }
 
-        const existingJob = JobStore.getJob(row.id);
-        const updatedFields: Partial<AgentJob> = {
-          status: row.status,
-          progressPercent: row.progress_percent,
-          statusMessage: row.status_message,
+        const processRow = async () => {
+          let cleanRes = row.clean_result;
+          if (cleanRes && typeof cleanRes === 'object' && cleanRes.is_r2 && cleanRes.r2_url) {
+            try {
+              const r = await fetch(cleanRes.r2_url);
+              if (r.ok) {
+                const fetched = await r.json();
+                if (fetched) {
+                  cleanRes = fetched;
+                }
+              }
+            } catch (err) {
+              console.warn('[SupabaseJobSync] Realtime R2 fetch failed:', err);
+            }
+          }
+
+          const existingJob = JobStore.getJob(row.id);
+          const updatedFields: Partial<AgentJob> = {
+            status: row.status,
+            progressPercent: row.progress_percent,
+            statusMessage: row.status_message,
+          };
+
+          if (cleanRes) {
+            updatedFields.result = {
+              ...(existingJob?.result || {}),
+              ...cleanRes,
+              photoUrl: row.photo_url || cleanRes.photoUrl,
+              debugUrl: row.debug_url || cleanRes.debugUrl,
+            };
+          }
+
+          if (row.status === 'awaiting_user' && cleanRes) {
+            const clarifyMsg = cleanRes.message || row.status_message || 'Confirm how much you ate';
+            updatedFields.messages = [{
+              id: `msg_assistant_clarify_${row.id}`,
+              role: 'assistant',
+              content: clarifyMsg,
+              timestamp: new Date().toISOString(),
+              isLive: false,
+              agentType: 'food',
+              data: {
+                needsPortionClarify: true,
+                portionClarify: cleanRes.portionClarify,
+                scoutItems: cleanRes.scoutItems || [],
+                photoUrl: row.photo_url || cleanRes.photoUrl,
+                debugUrl: row.debug_url || cleanRes.debugUrl,
+                agentResult: {
+                  backendLogs: cleanRes.backendLogs || '',
+                  globalLiveLogs: cleanRes.backendLogs || '',
+                  scoutItems: cleanRes.scoutItems || [],
+                  activeStage: 'portion_clarify',
+                },
+              },
+            }];
+          }
+
+          const rowPhotoUrl = row.photo_url || cleanRes?.photoUrl;
+          const rowDebugUrl = row.debug_url || cleanRes?.debugUrl;
+          if (rowPhotoUrl) {
+            updatedFields.photoUrl = rowPhotoUrl;
+            updatedFields.inputSnapshot = {
+              ...(existingJob?.inputSnapshot || {}),
+              hasImage: true
+            } as any;
+          }
+          if (rowDebugUrl) {
+            updatedFields.debugUrl = rowDebugUrl;
+          }
+
+          if (existingJob) {
+            JobStore.updateJob(row.id, updatedFields);
+          } else {
+            JobStore.createJob({
+              id: row.id,
+              kind: row.kind || 'food',
+              mode: row.mode || 'review',
+              status: row.status,
+              progressPercent: row.progress_percent || 0,
+              statusMessage: row.status_message || '',
+              messages: updatedFields.messages || [],
+              result: cleanRes || undefined,
+              photoUrl: rowPhotoUrl,
+              debugUrl: rowDebugUrl,
+              inputSnapshot: {
+                text: row.raw_text || cleanRes?.raw_text || '',
+                hasImage: !!rowPhotoUrl
+              },
+              createdAt: row.created_at ? new Date(row.created_at).toISOString() : new Date().toISOString(),
+            } as any);
+          }
         };
 
-        if (row.clean_result) {
-          updatedFields.result = {
-            ...(existingJob?.result || {}),
-            ...row.clean_result,
-            photoUrl: row.photo_url || row.clean_result.photoUrl,
-            debugUrl: row.debug_url || row.clean_result.debugUrl,
-          };
-        }
-
-        if (row.status === 'awaiting_user' && row.clean_result) {
-          const clarifyMsg = row.clean_result.message || row.status_message || 'Confirm how much you ate';
-          updatedFields.messages = [{
-            id: `msg_assistant_clarify_${row.id}`,
-            role: 'assistant',
-            content: clarifyMsg,
-            timestamp: new Date().toISOString(),
-            isLive: false,
-            agentType: 'food',
-            data: {
-              needsPortionClarify: true,
-              portionClarify: row.clean_result.portionClarify,
-              scoutItems: row.clean_result.scoutItems || [],
-              photoUrl: row.photo_url || row.clean_result.photoUrl,
-              debugUrl: row.debug_url || row.clean_result.debugUrl,
-              agentResult: {
-                backendLogs: row.clean_result.backendLogs || '',
-                globalLiveLogs: row.clean_result.backendLogs || '',
-                scoutItems: row.clean_result.scoutItems || [],
-                activeStage: 'portion_clarify',
-              },
-            },
-          }];
-        }
-
-        const rowPhotoUrl = row.photo_url || row.clean_result?.photoUrl;
-        const rowDebugUrl = row.debug_url || row.clean_result?.debugUrl;
-        if (rowPhotoUrl) {
-          updatedFields.photoUrl = rowPhotoUrl;
-          updatedFields.inputSnapshot = {
-            ...(existingJob?.inputSnapshot || {}),
-            hasImage: true
-          } as any;
-        }
-        if (rowDebugUrl) {
-          updatedFields.debugUrl = rowDebugUrl;
-        }
-
-        if (existingJob) {
-          JobStore.updateJob(row.id, updatedFields);
-        } else {
-          JobStore.createJob({
-            id: row.id,
-            kind: row.kind || 'food',
-            mode: row.mode || 'review',
-            status: row.status,
-            progressPercent: row.progress_percent || 0,
-            statusMessage: row.status_message || '',
-            messages: updatedFields.messages || [],
-            result: row.clean_result || undefined,
-            photoUrl: rowPhotoUrl,
-            debugUrl: rowDebugUrl,
-            inputSnapshot: {
-              text: row.raw_text || row.clean_result?.raw_text || '',
-              hasImage: !!rowPhotoUrl
-            },
-            createdAt: row.created_at ? new Date(row.created_at).toISOString() : new Date().toISOString(),
-          } as any);
-        }
+        processRow().catch(err => {
+          console.error('[SupabaseJobSync] Error processing realtime row:', err);
+        });
       }
     )
     .subscribe();

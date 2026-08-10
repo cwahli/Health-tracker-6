@@ -14,6 +14,61 @@ import type { Express, Request, Response } from 'express';
 import crypto from 'crypto';
 import { normalizeChainKey } from './serverBrandMenu.js';
 
+async function uploadBacklogPayloadToR2(id: string, payload: any): Promise<string> {
+  try {
+    const { S3Client, PutObjectCommand } = await import('@aws-sdk/client-s3');
+    const CLOUDFLARE_ACCOUNT_ID = process.env.CLOUDFLARE_ACCOUNT_ID || 'd17eecca64f82625d29dc38b14f46c14';
+    const CLOUDFLARE_R2_BUCKET_NAME = process.env.CLOUDFLARE_R2_BUCKET_NAME || 'health-tracker-photos';
+    const CLOUDFLARE_R2_PUBLIC_URL = (process.env.CLOUDFLARE_R2_PUBLIC_URL || 'https://pub-d17eecca64f82625d29dc38b14f46c14.r2.dev').replace(/\/$/, '');
+    const CLOUDFLARE_R2_ACCESS_KEY_ID = process.env.CLOUDFLARE_R2_ACCESS_KEY_ID || '';
+    const CLOUDFLARE_R2_SECRET_ACCESS_KEY = process.env.CLOUDFLARE_R2_SECRET_ACCESS_KEY || '';
+
+    const publicUrl = `${CLOUDFLARE_R2_PUBLIC_URL}/backlogs/${id}.json`;
+    if (!CLOUDFLARE_R2_ACCESS_KEY_ID || !CLOUDFLARE_R2_SECRET_ACCESS_KEY) {
+      console.warn('[Backlog R2] Credentials missing, skipping R2 upload');
+      return publicUrl;
+    }
+
+    const s3Endpoint = `https://${CLOUDFLARE_ACCOUNT_ID}.r2.cloudflarestorage.com`;
+    const client = new S3Client({
+      region: 'auto',
+      endpoint: s3Endpoint,
+      credentials: {
+        accessKeyId: CLOUDFLARE_R2_ACCESS_KEY_ID,
+        secretAccessKey: CLOUDFLARE_R2_SECRET_ACCESS_KEY,
+      },
+    });
+
+    const body = Buffer.from(JSON.stringify(payload, null, 2));
+
+    const command = new PutObjectCommand({
+      Bucket: CLOUDFLARE_R2_BUCKET_NAME,
+      Key: `backlogs/${id}.json`,
+      Body: body,
+      ContentType: 'application/json',
+    });
+    await client.send(command);
+    return publicUrl;
+  } catch (err) {
+    console.error('[Backlog R2] Upload failed:', err);
+    return '';
+  }
+}
+
+async function fetchPayloadFromR2(id: string): Promise<any> {
+  try {
+    const CLOUDFLARE_R2_PUBLIC_URL = (process.env.CLOUDFLARE_R2_PUBLIC_URL || 'https://pub-d17eecca64f82625d29dc38b14f46c14.r2.dev').replace(/\/$/, '');
+    const url = `${CLOUDFLARE_R2_PUBLIC_URL}/backlogs/${id}.json`;
+    const res = await fetch(url);
+    if (res.ok) {
+      return await res.json();
+    }
+  } catch (err) {
+    console.error(`[Backlog R2] Failed to fetch payload for ${id}:`, err);
+  }
+  return null;
+}
+
 const ISSUE_TYPES = new Set([
   'incorrect_answer',
   'wrong_item',
@@ -309,6 +364,18 @@ export function registerIssueBacklogRoutes(app: Express, deps: IssueBacklogDeps 
       }
       if (iErr) return res.status(500).json({ error: iErr.message });
 
+      if (issues && Array.isArray(issues)) {
+        issues = await Promise.all(issues.map(async (issue: any) => {
+          if (issue.payload && typeof issue.payload === 'object' && (issue.payload as any).is_r2) {
+            const r2Payload = await fetchPayloadFromR2(issue.id);
+            if (r2Payload) {
+              return { ...issue, payload: r2Payload };
+            }
+          }
+          return issue;
+        }));
+      }
+
       const { tags, links } = await loadBugTagsWithLinks(supabaseAdmin);
       const issuesById = new Map((issues || []).map((i: any) => [i.id, i]));
 
@@ -521,6 +588,14 @@ export function registerIssueBacklogRoutes(app: Express, deps: IssueBacklogDeps 
 
       const noteText = user_note != null ? String(user_note).trim() || null : null;
 
+      const lightweightPayload = {
+        is_r2: true,
+        r2_url: null as string | null,
+        pipelineErrorsCount: safePayload.pipelineErrors?.length || 0,
+        pipelineWarningsCount: safePayload.pipelineWarnings?.length || 0,
+        dishQuery: dish_query || null,
+      };
+
       const row = {
         status: 'to_fix',
         issue_type: String(issue_type),
@@ -532,7 +607,7 @@ export function registerIssueBacklogRoutes(app: Express, deps: IssueBacklogDeps 
         source_url: source_url || register_source_url || null,
         user_note: noteText,
         firebase_uid: firebase_uid || null,
-        payload: safePayload,
+        payload: lightweightPayload,
       };
 
       const { data, error } = await supabaseAdmin
@@ -548,6 +623,25 @@ export function registerIssueBacklogRoutes(app: Express, deps: IssueBacklogDeps 
           sessionId !== 'global' ? sessionId : undefined
         );
         return res.status(500).json({ error: error.message });
+      }
+
+      if (data && data.id) {
+        try {
+          const publicUrl = await uploadBacklogPayloadToR2(data.id, safePayload);
+          if (publicUrl) {
+            await supabaseAdmin
+              .from('issue_backlog')
+              .update({
+                payload: {
+                  ...lightweightPayload,
+                  r2_url: publicUrl,
+                },
+              })
+              .eq('id', data.id);
+          }
+        } catch (r2Err: any) {
+          console.error('[IssueBacklog R2] Async upload failed:', r2Err.message);
+        }
       }
 
       // Link or create requested tag / bug
@@ -817,6 +911,13 @@ export function registerIssueBacklogRoutes(app: Express, deps: IssueBacklogDeps 
         .eq('id', req.params.id)
         .single();
       if (error) return res.status(404).json({ error: error.message });
+
+      if (data && data.payload && typeof data.payload === 'object' && (data.payload as any).is_r2) {
+        const r2Payload = await fetchPayloadFromR2(data.id);
+        if (r2Payload) {
+          data.payload = r2Payload;
+        }
+      }
 
       let tags: any[] = [];
       try {

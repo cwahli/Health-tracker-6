@@ -417,10 +417,11 @@ export const fetchAllConsolidatedLogs = async (
   // API compat only — do NOT use to strip keys inside biomarker history rows
   _deletedCustomBiomarkerKeys: Record<string, number> = {},
   userEmail?: string,
-  options?: { timeoutMs?: number; skipFirebaseFallback?: boolean }
+  options?: { timeoutMs?: number; skipFirebaseFallback?: boolean; lastSyncTime?: number }
 ) => {
   const pullTimeoutMs = options?.timeoutMs ?? 60000;
   const skipFirebaseFallback = !!options?.skipFirebaseFallback;
+  const lastSyncTime = options?.lastSyncTime;
 
   let serverFoods: FoodLog[] = [];
   let serverBiomarkers: BiomarkerLog[] = [];
@@ -444,7 +445,7 @@ export const fetchAllConsolidatedLogs = async (
     const proxyRes = await fetch('/api/sync/supabase-pull', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ uid, email: userEmail }),
+      body: JSON.stringify({ uid, email: userEmail, lastSyncTime }),
       signal: controller.signal
     }).finally(() => clearTimeout(timeoutId));
     
@@ -538,24 +539,24 @@ export const fetchAllConsolidatedLogs = async (
 /**
  * Subscribes to instant Supabase real-time database changes for a user's food and biomarker logs.
  */
-export const subscribeToSupabaseLogs = (uid: string, onChange: () => void) => {
+export const subscribeToSupabaseLogs = (uid: string, onChange: (payload?: any) => void) => {
   if (!uid || !isSupabaseConfigured) return () => {};
   const channel = supabase
     .channel(`user_logs_${uid}`)
     .on(
       'postgres_changes',
       { event: '*', schema: 'public', table: 'food_logs', filter: `firebase_uid=eq.${uid}` },
-      () => onChange()
+      (payload) => onChange(payload)
     )
     .on(
       'postgres_changes',
       { event: '*', schema: 'public', table: 'biomarker_logs', filter: `firebase_uid=eq.${uid}` },
-      () => onChange()
+      (payload) => onChange(payload)
     )
     .on(
       'postgres_changes',
       { event: '*', schema: 'public', table: 'profiles', filter: `id=eq.${uid}` },
-      () => onChange()
+      (payload) => onChange(payload)
     )
     .subscribe();
 

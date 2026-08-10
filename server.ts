@@ -1560,6 +1560,19 @@ app.get('/api/jobs/status', async (req, res) => {
     const now = Date.now();
     const staleThresholdMs = 180000; // 3 minutes
     const processedJobs = await Promise.all((data || []).map(async (job: any) => {
+      // transparently resolve R2-stored clean_results on-the-fly
+      if (job.clean_result && typeof job.clean_result === 'object' && (job.clean_result as any).is_r2) {
+        try {
+          const { fetchJobResultFromR2 } = await import('./src/utils/r2Storage.js');
+          const fullResult = await fetchJobResultFromR2(job.id);
+          if (fullResult) {
+            job.clean_result = fullResult;
+          }
+        } catch (r2FetchErr) {
+          console.error(`[JobsStatus] Failed to transparently fetch R2 clean_result for ${job.id}:`, r2FetchErr);
+        }
+      }
+
       // awaiting_user can sit while the user picks a portion — do not auto-fail as stale running
       if (job.status === 'running' && job.updated_at) {
         const updatedAtTime = new Date(job.updated_at).getTime();
@@ -1629,6 +1642,18 @@ app.get('/api/jobs/debug', async (req, res) => {
       return res.status(404).json({ error: 'Job not found or access denied' });
     }
 
+    if (job.clean_result && typeof job.clean_result === 'object' && (job.clean_result as any).is_r2) {
+      try {
+        const { fetchJobResultFromR2 } = await import('./src/utils/r2Storage.js');
+        const fullResult = await fetchJobResultFromR2(job.id);
+        if (fullResult) {
+          job.clean_result = fullResult;
+        }
+      } catch (r2FetchErr) {
+        console.error(`[JobsDebug] Failed to transparently fetch R2 clean_result for ${job.id}:`, r2FetchErr);
+      }
+    }
+
     let debugPayload = null;
     if (job.debug_url) {
       try {
@@ -1693,6 +1718,49 @@ function getS3Client() {
   return s3Client;
 }
 
+async function uploadBase64ToR2(id: string, base64Data: string, index: number = 0): Promise<string> {
+  const client = getS3Client();
+  const safeId = String(id || 'unknown').replace(/[^a-zA-Z0-9_\-]/g, '_').slice(0, 120);
+  const suffix = index > 0 ? `_${index}` : '';
+  const objectKey = `photos/${safeId}${suffix}.jpg`;
+  const publicUrl = `${CLOUDFLARE_R2_PUBLIC_URL}/${objectKey}`;
+  const proxyUrl = `/photos/${safeId}${suffix}.jpg`;
+
+  if (!client) {
+    console.warn('[R2 uploadBase64ToR2] S3 Client not configured, returning proxyUrl');
+    return proxyUrl;
+  }
+
+  try {
+    let body;
+    let contentType = 'image/jpeg';
+
+    if (base64Data.startsWith('data:')) {
+      const match = base64Data.match(/^data:(image\/[a-zA-Z+]+);base64,(.+)$/);
+      if (match) {
+        contentType = match[1];
+        body = Buffer.from(match[2], 'base64');
+      } else {
+        body = Buffer.from(base64Data);
+      }
+    } else {
+      body = Buffer.from(base64Data, 'base64');
+    }
+
+    const command = new PutObjectCommand({
+      Bucket: CLOUDFLARE_R2_BUCKET_NAME,
+      Key: objectKey,
+      Body: body,
+      ContentType: contentType,
+    });
+    await client.send(command);
+    return publicUrl;
+  } catch (err) {
+    console.error('[R2 uploadBase64ToR2] Failed uploading to R2:', err);
+    return proxyUrl;
+  }
+}
+
 app.post('/api/r2/upload-photo', async (req, res) => {
   try {
     const { jobId, payload } = req.body;
@@ -1733,6 +1801,89 @@ app.post('/api/r2/upload-photo', async (req, res) => {
   } catch (err) {
     console.error('Failed to upload photo to R2:', err);
     res.status(500).json({ error: 'Failed to upload photo' });
+  }
+});
+
+app.post('/api/r2/migrate-firestore-images', async (req, res) => {
+  try {
+    const adminDb = getFirestore(firebaseConfig?.firestoreDatabaseId ? firebaseConfig.firestoreDatabaseId : undefined);
+    const foodImagesSnap = await adminDb.collectionGroup('foodImages').get();
+    
+    if (foodImagesSnap.empty) {
+      return res.json({ success: true, message: 'No foodImages documents found in Firestore.', stats: { inspected: 0, skipped: 0, migrated: 0, updated: 0 } });
+    }
+
+    let migratedCount = 0;
+    let docsUpdatedCount = 0;
+    let skippedCount = 0;
+
+    for (const docSnap of foodImagesSnap.docs) {
+      const data = docSnap.data();
+      const docId = docSnap.id;
+      const parentUser = docSnap.ref.parent.parent;
+      const userId = parentUser ? parentUser.id : 'unknown_user';
+
+      let hasChanges = false;
+      let updatedImageUrl = data.imageUrl || null;
+      let updatedImageUrls = Array.isArray(data.imageUrls) ? [...data.imageUrls] : [];
+
+      if (typeof data.imageUrl === 'string' && data.imageUrl.startsWith('data:image/')) {
+        hasChanges = true;
+        try {
+          console.log(`[Firestore API Migrate] Uploading imageUrl for doc ${docId} (User ${userId})...`);
+          const r2Url = await uploadBase64ToR2(docId, data.imageUrl, 0);
+          updatedImageUrl = r2Url;
+          migratedCount++;
+        } catch (uploadErr) {
+          console.error(`[Firestore API Migrate] Upload failure for ${docId}`);
+        }
+      }
+
+      if (Array.isArray(data.imageUrls)) {
+        for (let i = 0; i < data.imageUrls.length; i++) {
+          const url = data.imageUrls[i];
+          if (typeof url === 'string' && url.startsWith('data:image/')) {
+            hasChanges = true;
+            try {
+              console.log(`[Firestore API Migrate] Uploading imageUrls[${i}] for doc ${docId} (User ${userId})...`);
+              const r2Url = await uploadBase64ToR2(docId, url, i);
+              updatedImageUrls[i] = r2Url;
+              migratedCount++;
+            } catch (uploadErr) {
+              console.error(`[Firestore API Migrate] Upload failure for ${docId}[${i}]`);
+            }
+          }
+        }
+      }
+
+      if (hasChanges) {
+        console.log(`[Firestore API Migrate] Updating doc ID: ${docId} (User: ${userId}) in Firestore with clean R2 links...`);
+        try {
+          await docSnap.ref.update({
+            imageUrl: updatedImageUrl,
+            imageUrls: updatedImageUrls
+          });
+          docsUpdatedCount++;
+        } catch (updateErr: any) {
+          console.error(`[Firestore API Migrate] Failed to update doc ${docId}:`, updateErr.message || updateErr);
+        }
+      } else {
+        skippedCount++;
+      }
+    }
+
+    res.json({
+      success: true,
+      stats: {
+        inspected: foodImagesSnap.size,
+        skipped: skippedCount,
+        migrated: migratedCount,
+        updated: docsUpdatedCount
+      }
+    });
+  } catch (err: any) {
+    console.error('Failed to run Firestore migration via API:', err);
+    res.status(500).json({ error: 'Firestore migration failed', details: err?.message || String(err) });
   }
 });
 
@@ -1875,6 +2026,36 @@ app.post('/api/r2/upload-debug', async (req, res) => {
   } catch (err) {
     console.error('Failed to upload debug to R2:', err);
     res.status(500).json({ error: 'Failed to upload debug' });
+  }
+});
+
+app.post('/api/r2/upload-job-result', async (req, res) => {
+  try {
+    const { jobId, payload } = req.body;
+    if (!jobId || !payload) {
+      return res.status(400).json({ error: 'Missing jobId or payload' });
+    }
+    const publicUrl = `${CLOUDFLARE_R2_PUBLIC_URL}/jobs/${jobId}_result.json`;
+    const client = getS3Client();
+    if (!client) {
+      return res.json({ url: publicUrl });
+    }
+
+    const body = Buffer.from(JSON.stringify(payload, null, 2));
+
+    const command = new PutObjectCommand({
+      Bucket: CLOUDFLARE_R2_BUCKET_NAME,
+      Key: `jobs/${jobId}_result.json`,
+      Body: body,
+      ContentType: 'application/json',
+    });
+    await client.send(command);
+    console.log(`[JobResult R2 API] Uploaded ok key=jobs/${jobId}_result.json bytes=${body.length}`);
+
+    res.json({ url: publicUrl });
+  } catch (err: any) {
+    console.error('Failed to upload job result to R2:', err);
+    res.status(500).json({ error: err.message || 'Failed to upload job result' });
   }
 });
 
@@ -2858,7 +3039,7 @@ app.post("/api/sync/load", async (req, res) => {
 // ============================================================
 app.post("/api/sync/supabase-pull", async (req, res) => {
   try {
-    const { uid, email } = req.body;
+    const { uid, email, lastSyncTime } = req.body;
     if (!uid) {
       return res.status(400).json({ error: "uid is required" });
     }
@@ -2880,9 +3061,18 @@ app.post("/api/sync/supabase-pull", async (req, res) => {
 
     const { supabaseAdmin } = await import('./supabaseAdmin.js');
 
+    let foodQuery = supabaseAdmin.from('food_logs').select('*').in('firebase_uid', possibleUids);
+    let bioQuery = supabaseAdmin.from('biomarker_logs').select('*').in('firebase_uid', possibleUids);
+
+    if (lastSyncTime) {
+      const ts = new Date(lastSyncTime).toISOString();
+      foodQuery = foodQuery.gte('updated_at', ts);
+      bioQuery = bioQuery.gte('updated_at', ts);
+    }
+
     const [foodRes, bioRes, profileRes] = await Promise.all([
-      supabaseAdmin.from('food_logs').select('*').in('firebase_uid', possibleUids),
-      supabaseAdmin.from('biomarker_logs').select('*').in('firebase_uid', possibleUids),
+      foodQuery,
+      bioQuery,
       supabaseAdmin.from('profiles').select('*').in('firebase_uid', possibleUids)
     ]);
 
@@ -3135,6 +3325,29 @@ app.post("/api/sync/supabase-push", async (req, res) => {
         .map((f: any) => f.id);
 
       if (foodsToUpsert.length > 0) {
+        // Intercept any base64 images in foodsToUpsert and upload to Cloudflare R2
+        for (const food of foodsToUpsert) {
+          if (Array.isArray(food.image_urls) && food.image_urls.length > 0) {
+            const updatedUrls = [];
+            for (let i = 0; i < food.image_urls.length; i++) {
+              const url = food.image_urls[i];
+              if (url && typeof url === 'string' && url.startsWith('data:image/')) {
+                console.log(`[R2 Auto-upload] Uploading push-sync base64 image for food log ${food.id} (index ${i}) to R2...`);
+                try {
+                  const uploadedUrl = await uploadBase64ToR2(food.id, url, i);
+                  updatedUrls.push(uploadedUrl);
+                } catch (e: any) {
+                  console.error(`[R2 Auto-upload] Failed for food log ${food.id}:`, e?.message || e);
+                  updatedUrls.push(url);
+                }
+              } else {
+                updatedUrls.push(url);
+              }
+            }
+            food.image_urls = updatedUrls;
+          }
+        }
+
         const { error } = await supabaseAdmin.from('food_logs').upsert(foodsToUpsert);
         if (error) console.error('[Supabase Push] Food upsert error:', error.message);
         else foodCount += foodsToUpsert.length;
@@ -3974,13 +4187,32 @@ app.post("/api/gemini/food-analyze", async (req, res) => {
             if (cleanResult.agentResult) delete cleanResult.agentResult.backendLogs;
             if (cleanResult.raw) delete cleanResult.raw;
             
-            Promise.resolve(supabaseAdmin.from('agent_jobs').update({
-               status: 'succeeded',
-               progress_percent: 100,
-               status_message: 'Completed successfully',
-               clean_result: { pendingFoodLog: cleanResult, photoUrl },
-               updated_at: new Date().toISOString()
-            }).eq('id', jobId)).then(() => {
+            const dbCleanResult = { pendingFoodLog: cleanResult, photoUrl };
+            import('./src/utils/r2Storage.js').then(async ({ uploadJobResultToR2 }) => {
+               let lightweightResult = dbCleanResult;
+               try {
+                  const publicUrl = await uploadJobResultToR2(jobId, dbCleanResult);
+                  if (publicUrl) {
+                     lightweightResult = {
+                        is_r2: true,
+                        r2_url: publicUrl,
+                        mode: 'review',
+                        text: cleanResult.text || '',
+                        message: cleanResult.message || 'Completed successfully',
+                     } as any;
+                  }
+               } catch (r2Err) {
+                  console.error('[Background Worker] Failed to save cleanResult to R2:', r2Err);
+               }
+
+               return supabaseAdmin.from('agent_jobs').update({
+                  status: 'succeeded',
+                  progress_percent: 100,
+                  status_message: 'Completed successfully',
+                  clean_result: lightweightResult,
+                  updated_at: new Date().toISOString()
+               }).eq('id', jobId);
+            }).then(() => {
                console.log('[Background Worker] Successfully saved job to Supabase:', jobId);
             }).catch(e => console.error('Failed to update supabase', e));
          });
@@ -6123,6 +6355,7 @@ function parseServingSizeGrams(ssVal: string, totalItemWeight: number): number {
             let rawSumFat = 0;
             let rawSumSatFat = 0;
             let rawSumSodium = 0;
+            let rawSumSugar = 0;
 
             const ocrTargetCalories = Number(truthMatch.calories || 371);
 
@@ -6144,6 +6377,7 @@ function parseServingSizeGrams(ssVal: string, totalItemWeight: number): number {
               comp.totalFat = Number(baseNutrients.totalFat || baseNutrients.fat || 0) * f;
               comp.saturatedFat = Number(baseNutrients.saturatedFat || baseNutrients.satFat || 0) * f;
               comp.sodium = Number(baseNutrients.sodium || 0) * f;
+              comp.sugar = Number(baseNutrients.sugar || 0) * f;
               
               // Attach database names for UI sub-rows
               comp.name = bestMatch ? bestMatch.name : query;
@@ -6155,6 +6389,7 @@ function parseServingSizeGrams(ssVal: string, totalItemWeight: number): number {
               rawSumFat += comp.totalFat;
               rawSumSatFat += comp.saturatedFat;
               rawSumSodium += comp.sodium;
+              rawSumSugar += comp.sugar;
             });
 
             const scaleFactor = (rawSumCalories > 0 && ocrTargetCalories > 0) 
@@ -6170,6 +6405,7 @@ function parseServingSizeGrams(ssVal: string, totalItemWeight: number): number {
                 comp.totalFat = Math.round(comp.totalFat * scaleFactor * 10) / 10;
                 comp.saturatedFat = Math.round(comp.saturatedFat * scaleFactor * 10) / 10;
                 comp.sodium = Math.round(comp.sodium * scaleFactor);
+                comp.sugar = Math.round(comp.sugar * scaleFactor * 10) / 10;
               });
               
               inferredFromIngredients.protein = Math.round(rawSumProtein * scaleFactor * 10) / 10;
@@ -6177,6 +6413,7 @@ function parseServingSizeGrams(ssVal: string, totalItemWeight: number): number {
               inferredFromIngredients.saturatedFat = Math.round(rawSumSatFat * scaleFactor * 10) / 10;
               inferredFromIngredients.carbohydrates = Math.round(rawSumCarbs * scaleFactor * 10) / 10;
               inferredFromIngredients.sodium = Math.round(rawSumSodium * scaleFactor);
+              inferredFromIngredients.sugar = Math.round(rawSumSugar * scaleFactor * 10) / 10;
               backfillSource = 'ingredient_decomposition';
               truthMatch._isComponentDecomposition = true;
             }
@@ -6225,10 +6462,17 @@ function parseServingSizeGrams(ssVal: string, totalItemWeight: number): number {
               estimatedFields.push('totalFibre');
             }
           }
+          if (!lockedNutrientKeys.has('sugar')) {
+            const val = inferredFromIngredients.sugar > 0 ? inferredFromIngredients.sugar : 0;
+            if (val > 0) {
+              webSugar = val;
+              estimatedFields.push('sugar');
+            }
+          }
           // Remaining unlocked keys (vitamins/minerals/etc.) stay estimated-only
           NUTRIENT_KEYS.forEach((key) => {
             if (lockedNutrientKeys.has(key)) return;
-            if (['calories', 'protein', 'totalFat', 'saturatedFat', 'sodium', 'carbohydrates', 'totalFibre'].includes(key)) return;
+            if (['calories', 'protein', 'totalFat', 'saturatedFat', 'sodium', 'carbohydrates', 'totalFibre', 'sugar'].includes(key)) return;
             if (inferredFromIngredients[key] > 0) estimatedFields.push(key);
           });
 
@@ -6301,6 +6545,7 @@ function parseServingSizeGrams(ssVal: string, totalItemWeight: number): number {
           aggregatedNutrients.sodium = webNa;
           aggregatedNutrients.carbohydrates = webCarbs;
           aggregatedNutrients.totalFibre = webFibre;
+          aggregatedNutrients.sugar = webSugar;
           if (lockedNutrientKeys.has('addedSugar') && truthNutrients.addedSugar != null) {
             aggregatedNutrients.addedSugar = Number(truthNutrients.addedSugar);
           } else if (webAddedSugar > 0) {

@@ -277,14 +277,33 @@ export async function upsertFoodItemCandidate(item: {
     }
     
     // Check if existing candidate to count captures and check Atwater
-    let newStatus = item.status || 'candidate';
-    let captureCount = 1;
+    const { data: existingById } = await supabaseAdmin
+      .from('food_items')
+      .select('*')
+      .eq('food_id', item.food_id)
+      .maybeSingle();
 
-    const { data: existing } = await supabaseAdmin
+    const { data: existingByKey } = await supabaseAdmin
       .from('food_items')
       .select('*')
       .eq('food_key', normKey)
       .maybeSingle();
+
+    let finalKey = normKey;
+    let existing = existingById || existingByKey;
+
+    if (existingById) {
+      // Keep original food_key of the existing food_id row to prevent UNIQUE violations or key changes
+      finalKey = existingById.food_key;
+      existing = existingById;
+    } else if (existingByKey) {
+      // The food_key is in use by another food_id. Make our new entry's key unique to prevent UNIQUE constraint violation.
+      finalKey = `${normKey}_${item.food_id}`;
+      existing = null;
+    }
+
+    let newStatus = item.status || 'candidate';
+    let captureCount = 1;
 
     if (existing) {
       captureCount = (existing.capture_count || 1) + 1;
@@ -300,7 +319,7 @@ export async function upsertFoodItemCandidate(item: {
         newStatus = 'active';
         recordSyncEvent({
           event_type: 'auto_promote',
-          payload: { food_key: normKey, food_id: item.food_id }
+          payload: { food_key: finalKey, food_id: item.food_id }
         }).catch(() => {});
       } else if (!atwater.valid) {
         newStatus = 'quarantine';
@@ -311,7 +330,7 @@ export async function upsertFoodItemCandidate(item: {
       .from('food_items')
       .upsert({
         food_id: item.food_id,
-        food_key: normKey,
+        food_key: finalKey,
         display_name: item.display_name,
         nutrients_per_100g: item.nutrients_per_100g,
         fdc_id: item.fdc_id || null,
@@ -322,7 +341,7 @@ export async function upsertFoodItemCandidate(item: {
         confidence: item.confidence ?? 0.5,
         provenance: item.provenance || 'resolver_candidate',
         updated_at: new Date().toISOString(),
-      }, { onConflict: 'food_key' });
+      }, { onConflict: 'food_id' });
 
     if (error) return { success: false, error: error.message };
     return { success: true };

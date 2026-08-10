@@ -810,6 +810,25 @@ const LiveBackendStreamViewer = ({ logs }: { logs: string }) => {
     setTimeout(() => setCopied(false), 2000);
   };
 
+  const handleDownload = () => {
+    try {
+      const textToDownload = tabFilteredDisplayLines.join('\n');
+      const blob = new Blob([textToDownload], { type: 'text/plain;charset=utf-8' });
+      const blobUrl = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = blobUrl;
+      const tabName = activeTab === 'all' ? 'all' : activeTab;
+      const timeStr = new Date().toISOString().slice(11, 19).replace(/:/g, '-');
+      a.download = `logs-${tabName}-${timeStr}.txt`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(blobUrl);
+    } catch (err) {
+      console.error('Download logs failed:', err);
+    }
+  };
+
   const renderHighlightedLine = (line: string, lineIndex: number) => {
     if (!searchQuery.trim() || !line.toLowerCase().includes(searchQuery.toLowerCase().trim())) {
       return <span>{line}</span>;
@@ -925,6 +944,16 @@ const LiveBackendStreamViewer = ({ logs }: { logs: string }) => {
             className="flex items-center gap-1 px-2 py-0.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-md text-[9px] border border-slate-700 transition-colors cursor-pointer"
           >
             {copied ? 'Copied!' : 'Copy'}
+          </button>
+
+          <button
+            type="button"
+            onClick={handleDownload}
+            className="flex items-center gap-1 px-2 py-0.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-md text-[9px] border border-slate-700 transition-colors cursor-pointer"
+            title="Download logs"
+          >
+            <Download className="w-2.5 h-2.5 text-slate-300" />
+            Download
           </button>
         </div>
       </div>

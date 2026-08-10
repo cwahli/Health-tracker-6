@@ -53,7 +53,7 @@ function firestoreReadGuard(label: string, docCount: number = 1): boolean {
 
 
 import { runCleanupMigration } from './utils/migrationTask';
-import { syncLogsWithTimeBuckets, fetchAllConsolidatedLogs, subscribeToSupabaseLogs, upsertProfileToSupabase, mergeByRecency, mergeActions, mergeBenefits, mergeFoodIdeas, mergeReports, mergeProfiles, mergeBiomarkerHistory } from "./utils/syncUtils";
+import { syncLogsWithTimeBuckets, fetchAllConsolidatedLogs, subscribeToSupabaseLogs, upsertProfileToSupabase, mergeByRecency, mergeActions, mergeBenefits, mergeFoodIdeas, mergeReports, mergeProfiles, mergeBiomarkerHistory, supabaseRowToFoodLog, supabaseRowToBiomarkerLog } from "./utils/syncUtils";
 import { mergeFoodLogsDeduped, rehydrateFoodImagesFromDonors, foodLogFingerprint } from "./utils/foodLogDedupe";
 import { isUsableImageUrl } from "./utils/foodImageSources";
 import { sanitizeBiomarkerHistoryOnLoad } from "./utils/biomarkers";
@@ -3353,8 +3353,21 @@ export default function App() {
           
           // B. Real-Time Supabase Sync
           try {
-            const supabaseUnsub = subscribeToSupabaseLogs(user.uid, async () => {
-              console.log('[Supabase Realtime] Database change detected, merging logs and profiles...');
+            const supabaseUnsub = subscribeToSupabaseLogs(user.uid, async (payload: any) => {
+              if (payload && payload.new && payload.eventType !== 'DELETE') {
+                console.log(`[Supabase Realtime] Change detected on ${payload.table}: ${payload.eventType}`);
+                if (payload.table === 'food_logs') {
+                  const newLog = supabaseRowToFoodLog(payload.new);
+                  setFoodLogs(prevFoods => mergeFoodLogsDeduped(prevFoods, [newLog]));
+                  return;
+                } else if (payload.table === 'biomarker_logs') {
+                  const newBio = supabaseRowToBiomarkerLog(payload.new);
+                  setBiomarkerHistory(prevBio => mergeByRecency(prevBio, [newBio]));
+                  return;
+                }
+              }
+
+              console.log('[Supabase Realtime] Full database change detected, merging logs and profiles...');
               const deletedFoods = profile?.deletedFoodLogIds || {};
               const deletedBios = profile?.deletedBiomarkerLogIds || {};
               const deletedCustomKeys = profile?.deletedCustomBiomarkerKeys || {};
