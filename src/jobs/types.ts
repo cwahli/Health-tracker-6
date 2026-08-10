@@ -6,6 +6,7 @@ export type JobKind = 'food_log' | 'food_compare' | 'front_desk' | 'medical' | s
 
 export interface AgentJob {
   id: string;
+  viewed?: boolean;
   kind: JobKind;
   mode?: string;
   lockedModeFamily?: string;

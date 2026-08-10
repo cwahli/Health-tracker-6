@@ -2390,6 +2390,7 @@ ${logsText}`);
           isError: true
         };
         setMessages(prev => [...prev, errorMsg]);
+        isSendingRef.current = false;
         setIsAnalyzing(false);
         return;
       }
@@ -2429,6 +2430,8 @@ ${logsText}`);
         }
         if (!textToSend && finalImages.length === 0) {
           console.log('[handleSend] Blocked — both text and images are empty.');
+          isSendingRef.current = false;
+          setIsAnalyzing(false);
           return;
         }
 

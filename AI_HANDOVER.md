@@ -1,6 +1,6 @@
 # Health Cockpit — Master AI Handover (WIP status board)
 
-**Last updated:** 2026-08-09 (portion clarify workflow + JobQueueRunner awaiting_user status fix; 30 test files / 243 unit tests PASS)  
+**Last updated:** 2026-08-10 (Portion Clarification state loss & 0-nutrient calculation fixed, empty input send lockout resolved, and Interactive "Ready" badge implemented; all gates & tests PASS)  
 **Source of truth code intent:** https://github.com/cwahli/Health-tracker-6  
 **Tree of truth for product completeness:** **Desktop** working tree until Slice 0 / governance ship lands on origin.  
 **Always `git fetch` + re-audit before a session.**

@@ -1305,7 +1305,7 @@ export default function Header({
                 {(() => {
                   const runningJobs = jobs.filter(j => j.status === 'running');
                   const queuedJobs = jobs.filter(j => j.status === 'queued');
-                  const succeededUnsavedJobs = jobs.filter(j => j.status === 'succeeded' && !j.result?.savedToHistory);
+                  const succeededUnsavedJobs = jobs.filter(j => j.status === 'succeeded' && !j.result?.savedToHistory && !j.viewed && !j.result?.viewed);
                   
                   const runningCount = runningJobs.length;
                   const queuedCount = queuedJobs.length;
@@ -1317,8 +1317,10 @@ export default function Header({
                   const activeProgress = activeRunning?.progressPercent || 0;
 
                   const handleBadgeClick = () => {
-                    const firstJob = runningJobs[0] || queuedJobs[0] || succeededUnsavedJobs[0];
-                    const isMedical = firstJob?.kind === 'medical';
+                    const targetJob = succeededUnsavedJobs[0] || runningJobs[0] || queuedJobs[0];
+                    if (!targetJob) return;
+                    
+                    const isMedical = targetJob.kind === 'medical';
                     const targetTab = isMedical ? 'medical' : 'food';
 
                     if (onNavigateTab) {
@@ -1327,10 +1329,26 @@ export default function Header({
                       window.dispatchEvent(new CustomEvent('navigate-tab', { detail: targetTab }));
                     }
 
+                    // If this is a ready job, mark it as viewed to decrement count by 1
+                    if (targetJob.status === 'succeeded') {
+                      JobStore.updateJob(targetJob.id, {
+                        viewed: true,
+                        result: {
+                          ...(targetJob.result || {}),
+                          viewed: true
+                        }
+                      });
+                    }
+
                     setTimeout(() => {
-                      const el = document.getElementById(isMedical ? 'active-medical-jobs' : 'food-history-tab');
-                      if (el) el.scrollIntoView({ behavior: 'smooth' });
-                    }, 100);
+                      const jobEl = document.getElementById(`job-${targetJob.id}`) || document.getElementById(`task-card-${targetJob.id}`);
+                      if (jobEl) {
+                        jobEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                      } else {
+                        const fallbackEl = document.getElementById(isMedical ? 'active-medical-jobs' : 'food-history-tab');
+                        if (fallbackEl) fallbackEl.scrollIntoView({ behavior: 'smooth' });
+                      }
+                    }, 150);
                   };
 
                   return (
