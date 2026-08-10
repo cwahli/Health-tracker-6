@@ -5419,6 +5419,7 @@ app.post("/api/gemini/food-analyze", async (req, res) => {
       if (isStream && hasSentHeaders) {
         sendStreamEvent({
           type: 'done',
+          final: true,
           result: {
             needsPortionClarify: true,
             mode: 'portion_clarify',

@@ -376,7 +376,7 @@ export async function submitServerJob(payload: ServerJobPayload): Promise<void> 
                   }
                   await updateSupabaseProgress(prog, msg);
                 }
-              } else if (parsed.final === true && parsed.result) {
+              } else if ((parsed.final === true || parsed.type === 'done') && parsed.result) {
                 finalData = parsed.result;
               }
             } catch (err: any) {
