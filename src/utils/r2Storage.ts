@@ -202,18 +202,147 @@ export async function uploadJobResultToR2(jobId: string, resultJson: object): Pr
 
 export async function fetchJobResultFromR2(jobId: string): Promise<any> {
   try {
-    const CLOUDFLARE_R2_PUBLIC_URL = (process.env.CLOUDFLARE_R2_PUBLIC_URL || 'https://pub-d17eecca64f82625d29dc38b14f46c14.r2.dev').replace(/\/$/, '');
-    const url = `${CLOUDFLARE_R2_PUBLIC_URL}/jobs/${jobId}_result.json`;
-    const res = await fetch(url);
-    if (res.ok) {
-      return await res.json();
+    const { S3Client, GetObjectCommand } = await import('@aws-sdk/client-s3');
+    const CLOUDFLARE_ACCOUNT_ID = process.env.CLOUDFLARE_ACCOUNT_ID || 'd17eecca64f82625d29dc38b14f46c14';
+    const CLOUDFLARE_R2_BUCKET_NAME = process.env.CLOUDFLARE_R2_BUCKET_NAME || 'health-tracker-photos';
+    const CLOUDFLARE_R2_ACCESS_KEY_ID = process.env.CLOUDFLARE_R2_ACCESS_KEY_ID || '';
+    const CLOUDFLARE_R2_SECRET_ACCESS_KEY = process.env.CLOUDFLARE_R2_SECRET_ACCESS_KEY || '';
+
+    if (!CLOUDFLARE_R2_ACCESS_KEY_ID || !CLOUDFLARE_R2_SECRET_ACCESS_KEY) {
+      // Fallback to public URL if no credentials
+      const CLOUDFLARE_R2_PUBLIC_URL = (process.env.CLOUDFLARE_R2_PUBLIC_URL || 'https://pub-d17eecca64f82625d29dc38b14f46c14.r2.dev').replace(/\/$/, '');
+      const url = `${CLOUDFLARE_R2_PUBLIC_URL}/jobs/${jobId}_result.json`;
+      const res = await fetch(url);
+      if (res.ok) {
+        return await res.json();
+      }
+      return null;
+    }
+
+    const s3Endpoint = `https://${CLOUDFLARE_ACCOUNT_ID}.r2.cloudflarestorage.com`;
+    const client = new S3Client({
+      region: 'auto',
+      endpoint: s3Endpoint,
+      credentials: {
+        accessKeyId: CLOUDFLARE_R2_ACCESS_KEY_ID,
+        secretAccessKey: CLOUDFLARE_R2_SECRET_ACCESS_KEY,
+      },
+    });
+
+    const command = new GetObjectCommand({
+      Bucket: CLOUDFLARE_R2_BUCKET_NAME,
+      Key: `jobs/${jobId}_result.json`,
+    });
+
+    const response = await client.send(command);
+    if (response.Body) {
+      const bodyString = await response.Body.transformToString();
+      return JSON.parse(bodyString);
     }
   } catch (err) {
-    console.error(`[R2Storage] Failed to fetch job result for ${jobId}:`, err);
+    console.error(`[R2Storage] Failed to fetch job result for ${jobId} using S3 SDK:`, err);
   }
   return null;
 }
 
-/* proxyUrl */
+export async function uploadLogsToR2(jobId: string, logsText: string): Promise<string> {
+  if (typeof window === 'undefined') {
+    try {
+      const { S3Client, PutObjectCommand } = await import('@aws-sdk/client-s3');
+      const CLOUDFLARE_ACCOUNT_ID = process.env.R2_ACCOUNT_ID || process.env.CLOUDFLARE_ACCOUNT_ID || 'd17eecca64f82625d29dc38b14f46c14';
+      const CLOUDFLARE_R2_BUCKET_NAME = process.env.R2_BUCKET_NAME || process.env.CLOUDFLARE_R2_BUCKET_NAME || 'health-tracker-photos';
+      const CLOUDFLARE_R2_PUBLIC_URL = (process.env.R2_PUBLIC_URL || process.env.CLOUDFLARE_R2_PUBLIC_URL || 'https://pub-d17eecca64f82625d29dc38b14f46c14.r2.dev').replace(/\/$/, '');
+      const CLOUDFLARE_R2_ACCESS_KEY_ID = process.env.R2_ACCESS_KEY_ID || process.env.CLOUDFLARE_R2_ACCESS_KEY_ID || '';
+      const CLOUDFLARE_R2_SECRET_ACCESS_KEY = process.env.R2_SECRET_ACCESS_KEY || process.env.CLOUDFLARE_R2_SECRET_ACCESS_KEY || '';
+
+      const publicUrl = `${CLOUDFLARE_R2_PUBLIC_URL}/logs/${jobId}.log`;
+      if (!CLOUDFLARE_R2_ACCESS_KEY_ID || !CLOUDFLARE_R2_SECRET_ACCESS_KEY) {
+        console.error('[R2Storage] Missing R2 credentials — skipping logs upload.');
+        return '';
+      }
+
+      const s3Endpoint = `https://${CLOUDFLARE_ACCOUNT_ID}.r2.cloudflarestorage.com`;
+      const client = new S3Client({
+        region: 'auto',
+        endpoint: s3Endpoint,
+        credentials: {
+          accessKeyId: CLOUDFLARE_R2_ACCESS_KEY_ID,
+          secretAccessKey: CLOUDFLARE_R2_SECRET_ACCESS_KEY,
+        },
+      });
+
+      const body = Buffer.from(logsText, 'utf-8');
+
+      const command = new PutObjectCommand({
+        Bucket: CLOUDFLARE_R2_BUCKET_NAME,
+        Key: `logs/${jobId}.log`,
+        Body: body,
+        ContentType: 'text/plain',
+      });
+      await client.send(command);
+      return publicUrl;
+    } catch (err) {
+      console.error('[R2Storage] Server-side uploadLogsToR2 failed:', err);
+      return '';
+    }
+  }
+
+  try {
+    const res = await fetch('/api/r2/upload-logs', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jobId, logsText }),
+    });
+    if (!res.ok) throw new Error('Failed to upload logs');
+    const data = await res.json();
+    return data.url;
+  } catch (err) {
+    console.error('[R2Storage] Failed uploading logs to R2:', err);
+    return '';
+  }
+}
+
+export async function fetchLogsFromR2(jobId: string): Promise<string | null> {
+  try {
+    const CLOUDFLARE_ACCOUNT_ID = process.env.R2_ACCOUNT_ID || process.env.CLOUDFLARE_ACCOUNT_ID || 'd17eecca64f82625d29dc38b14f46c14';
+    const CLOUDFLARE_R2_BUCKET_NAME = process.env.R2_BUCKET_NAME || process.env.CLOUDFLARE_R2_BUCKET_NAME || 'health-tracker-photos';
+    const CLOUDFLARE_R2_ACCESS_KEY_ID = process.env.R2_ACCESS_KEY_ID || process.env.CLOUDFLARE_R2_ACCESS_KEY_ID || '';
+    const CLOUDFLARE_R2_SECRET_ACCESS_KEY = process.env.R2_SECRET_ACCESS_KEY || process.env.CLOUDFLARE_R2_SECRET_ACCESS_KEY || '';
+
+    if (!CLOUDFLARE_R2_ACCESS_KEY_ID || !CLOUDFLARE_R2_SECRET_ACCESS_KEY) {
+      const CLOUDFLARE_R2_PUBLIC_URL = (process.env.R2_PUBLIC_URL || process.env.CLOUDFLARE_R2_PUBLIC_URL || 'https://pub-d17eecca64f82625d29dc38b14f46c14.r2.dev').replace(/\/$/, '');
+      const url = `${CLOUDFLARE_R2_PUBLIC_URL}/logs/${jobId}.log`;
+      const res = await fetch(url);
+      if (res.ok) {
+        return await res.text();
+      }
+      return null;
+    }
+
+    const { S3Client, GetObjectCommand } = await import('@aws-sdk/client-s3');
+    const s3Endpoint = `https://${CLOUDFLARE_ACCOUNT_ID}.r2.cloudflarestorage.com`;
+    const client = new S3Client({
+      region: 'auto',
+      endpoint: s3Endpoint,
+      credentials: {
+        accessKeyId: CLOUDFLARE_R2_ACCESS_KEY_ID,
+        secretAccessKey: CLOUDFLARE_R2_SECRET_ACCESS_KEY,
+      },
+    });
+
+    const command = new GetObjectCommand({
+      Bucket: CLOUDFLARE_R2_BUCKET_NAME,
+      Key: `logs/${jobId}.log`,
+    });
+
+    const response = await client.send(command);
+    if (response.Body) {
+      return await response.Body.transformToString();
+    }
+  } catch (err) {
+    console.error(`[R2Storage] Failed to fetch logs for ${jobId}:`, err);
+  }
+  return null;
+}
 
 /* stripHeavyImages coldDebugR2Key COLD_DEBUG_LOG opts?: { userId? */

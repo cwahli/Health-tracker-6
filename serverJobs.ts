@@ -4,6 +4,7 @@ import { supabaseAdmin } from './supabaseAdmin';
 
 export interface ServerJobPayload {
   jobId: string;
+  idempotencyKey?: string;
   userId?: string;
   kind: string;
   mode: string;
@@ -20,9 +21,52 @@ export interface ServerJobPayload {
   userSelectedMode?: string;
   activeScoutItems?: any[];
   portionChoices?: any;
+  clientConsoleLogs?: string[];
+  networkErrors?: string[];
+  userActionBreadcrumbs?: any[];
+  lastUserAction?: any;
 }
 
 export const inMemoryServerJobs = new Map<string, any>();
+export const recentSubmissionsMap = new Map<string, { jobId: string; timestamp: number; status: string }>();
+
+// Clean up old idempotency entries periodically (> 60s)
+if (typeof setInterval !== 'undefined') {
+  setInterval(() => {
+    const now = Date.now();
+    for (const [key, entry] of recentSubmissionsMap.entries()) {
+      if (now - entry.timestamp > 60000) {
+        recentSubmissionsMap.delete(key);
+      }
+    }
+  }, 30000);
+}
+
+export async function checkOrRegisterIdempotentSubmission(payload: ServerJobPayload): Promise<{ isDuplicate: boolean; jobId: string; status?: string }> {
+  const userId = payload.userId || 'anonymous';
+  const rawText = (payload.text || '').trim().toLowerCase();
+  const imgCount = (payload.images?.length || 0) + (payload.imageUrls?.length || 0);
+  const modeKey = payload.userSelectedMode || payload.mode || 'review';
+
+  // Explicit idempotencyKey or content fingerprint key (12s window)
+  const key = payload.idempotencyKey || `${userId}:${rawText}:${imgCount}:${modeKey}:${Math.floor(Date.now() / 12000)}`;
+
+  const existing = recentSubmissionsMap.get(key);
+  if (existing && (Date.now() - existing.timestamp < 12000)) {
+    const memJob = inMemoryServerJobs.get(existing.jobId);
+    const currentStatus = memJob?.status || existing.status || 'queued';
+    console.log(`[ServerJobs Idempotency] Blocked duplicate submission key="${key}". Reusing active jobId="${existing.jobId}" (status="${currentStatus}")`);
+    return { isDuplicate: true, jobId: existing.jobId, status: currentStatus };
+  }
+
+  recentSubmissionsMap.set(key, {
+    jobId: payload.jobId,
+    timestamp: Date.now(),
+    status: 'queued'
+  });
+
+  return { isDuplicate: false, jobId: payload.jobId };
+}
 
 export function getInMemoryServerJob(jobId: string) {
   return inMemoryServerJobs.get(jobId) || null;
@@ -353,13 +397,19 @@ export async function submitServerJob(payload: ServerJobPayload): Promise<void> 
       }
 
       if (finalData.needsPortionClarify) {
-        // Defensive mirror: make sure backendLogs is readable both at the top level
-        // and under agentResult, regardless of which one a given client build reads.
-        finalData.backendLogs = finalData.backendLogs
-          || finalData.agentResult?.backendLogs
-          || accumulatedLogs.join('\n').slice(0, 200000);
+        let logsUrl = '';
+        try {
+          const { uploadLogsToR2 } = await import('./src/utils/r2Storage.js');
+          logsUrl = await uploadLogsToR2(jobId, accumulatedLogs.join('\n'));
+        } catch (r2LogErr) {
+          console.warn('[ServerJobs] Failed uploading portion clarify logs to R2:', r2LogErr);
+        }
+
+        finalData.backendLogsUrl = logsUrl || undefined;
+        finalData.backendLogs = logsUrl ? `[Logs stored in R2: ${logsUrl}]` : accumulatedLogs.join('\n').slice(0, 5000);
         if (finalData.agentResult) {
-          finalData.agentResult.backendLogs = finalData.agentResult.backendLogs || finalData.backendLogs;
+          finalData.agentResult.backendLogsUrl = logsUrl || undefined;
+          finalData.agentResult.backendLogs = finalData.backendLogs;
         }
 
         const memJob = inMemoryServerJobs.get(jobId);
@@ -378,6 +428,7 @@ export async function submitServerJob(payload: ServerJobPayload): Promise<void> 
               lightweightFinalData = {
                 is_r2: true,
                 r2_url: publicUrl,
+                backendLogsUrl: logsUrl || undefined,
                 mode: finalData.mode || 'review',
                 text: finalData.text || '',
                 message: finalData.message || 'Please clarify portion sizes.',
@@ -415,6 +466,15 @@ export async function submitServerJob(payload: ServerJobPayload): Promise<void> 
           delete pendingFoodLog.images;
         }
 
+        let logsUrl = '';
+        const rawLogsText = accumulatedLogs.join('\n');
+        try {
+          const { uploadLogsToR2 } = await import('./src/utils/r2Storage.js');
+          logsUrl = await uploadLogsToR2(jobId, rawLogsText);
+        } catch (r2LogErr) {
+          console.warn('[ServerJobs] Failed uploading execution logs to R2:', r2LogErr);
+        }
+
         const cleanResult: any = {
           pendingFoodLog: pendingFoodLog,
           message: finalPayload?.message || finalPayload?.text || '',
@@ -424,9 +484,14 @@ export async function submitServerJob(payload: ServerJobPayload): Promise<void> 
           scoutItems: finalPayload?.scoutItems || undefined,
           photoUrl: photoUrl || undefined,
           debugUrl: undefined as string | undefined,
-          backendLogs: accumulatedLogs.join('\n').slice(0, 200000),
+          backendLogsUrl: logsUrl || undefined,
+          backendLogs: logsUrl ? `[Logs stored in R2: ${logsUrl}]` : rawLogsText.slice(0, 5000),
           mealBuild: finalPayload?.mealBuild,
           degradedStages: finalPayload?.degradedStages,
+          lastUserAction: payload.lastUserAction || (text ? { action: 'chat_submit', prompt: text, timestamp: new Date().toISOString() } : undefined),
+          clientConsoleLogs: payload.clientConsoleLogs || [],
+          networkErrors: payload.networkErrors || [],
+          userActionBreadcrumbs: payload.userActionBreadcrumbs || [],
         };
 
         try {
@@ -438,8 +503,13 @@ export async function submitServerJob(payload: ServerJobPayload): Promise<void> 
             text,
             photoUrl,
             result: cleanResult,
-            backendLogs: accumulatedLogs.join('\n'),
+            backendLogsUrl: logsUrl || undefined,
+            backendLogs: rawLogsText,
             completedAt: new Date().toISOString(),
+            lastUserAction: cleanResult.lastUserAction,
+            clientConsoleLogs: payload.clientConsoleLogs,
+            networkErrors: payload.networkErrors,
+            userActionBreadcrumbs: payload.userActionBreadcrumbs
           });
           if (debugUrl) cleanResult.debugUrl = debugUrl;
         } catch (r2Err) {
@@ -466,6 +536,7 @@ export async function submitServerJob(payload: ServerJobPayload): Promise<void> 
               lightweightResult = {
                 is_r2: true,
                 r2_url: publicUrl,
+                backendLogsUrl: logsUrl || undefined,
                 mode: cleanResult.mode || 'review',
                 text: cleanResult.text || '',
                 message: cleanResult.message || 'Analysis complete',
@@ -507,10 +578,20 @@ export async function submitServerJob(payload: ServerJobPayload): Promise<void> 
         }
       }
 
+      let logsUrl = '';
+      const rawErrorLogs = accumulatedLogs.join('\n');
+      try {
+        const { uploadLogsToR2 } = await import('./src/utils/r2Storage.js');
+        logsUrl = await uploadLogsToR2(jobId, rawErrorLogs);
+      } catch (r2LogErr) {
+        console.warn('[ServerJobs] Failed uploading error logs to R2:', r2LogErr);
+      }
+
       const errorCleanResult: any = {
         message: err.message || 'Server analysis failed or timed out',
         error: err.message || 'Unknown error',
-        backendLogs: accumulatedLogs.join('\n').slice(0, 200000),
+        backendLogsUrl: logsUrl || undefined,
+        backendLogs: logsUrl ? `[Logs stored in R2: ${logsUrl}]` : rawErrorLogs.slice(0, 5000),
         photoUrl: photoUrl || undefined,
         scoutItems: finalData?.scoutItems,
       };
@@ -526,7 +607,8 @@ export async function submitServerJob(payload: ServerJobPayload): Promise<void> 
           text,
           photoUrl,
           result: errorCleanResult,
-          backendLogs: errorCleanResult.backendLogs,
+          backendLogsUrl: logsUrl || undefined,
+          backendLogs: rawErrorLogs,
           failedAt: new Date().toISOString(),
         });
         if (debugUrl) errorCleanResult.debugUrl = debugUrl;

@@ -592,7 +592,7 @@ export default function NutritionDataBrowserModal({ isOpen, onClose }: Nutrition
   if (!isOpen) return null;
 
   const tabs: { id: TabId; label: string; count?: number }[] = [
-    { id: 'chains', label: 'Restaurant', count: data?.chainSources?.length },
+    { id: 'chains', label: 'Branded food', count: data?.chainSources?.length },
     { id: 'base', label: 'Base food cache', count: data?.baseFoodCache?.length },
     { id: 'catalog', label: 'Food catalog', count: catalogItems.length },
     { id: 'unfetched', label: 'Not fetched / pending', count: data?.chainNotFetched?.length },
@@ -1123,7 +1123,7 @@ export default function NutritionDataBrowserModal({ isOpen, onClose }: Nutrition
                                 });
                               }}
                               className="p-1 rounded hover:bg-white/10 text-white/75"
-                              title="Edit Restaurant"
+                              title="Edit Branded Food / Restaurant"
                             >
                               <Pencil className="w-3.5 h-3.5" />
                             </button>
@@ -1160,7 +1160,7 @@ export default function NutritionDataBrowserModal({ isOpen, onClose }: Nutrition
                               return (
                                 <div key={item.dish_name_key || item.id} className="text-[10px] bg-slate-950/80 p-2.5 rounded-lg border border-indigo-500/50 space-y-2">
                                   <div className="flex items-center justify-between border-b border-white/5 pb-1.5">
-                                    <span className="text-[9px] text-indigo-400 font-bold uppercase tracking-wider">✏️ Edit Restaurant Item</span>
+                                    <span className="text-[9px] text-indigo-400 font-bold uppercase tracking-wider">✏️ Edit Branded Food Item</span>
                                     <div className="flex gap-1.5">
                                       <button
                                         type="button"
@@ -1563,14 +1563,14 @@ export default function NutritionDataBrowserModal({ isOpen, onClose }: Nutrition
 
               {showAddChain && (
                 <div className="border border-indigo-500/30 rounded-xl p-3 bg-slate-950/40 space-y-3 mb-3 text-left">
-                  <h3 className="text-xs font-bold text-indigo-300">Add a new chain / restaurant source</h3>
+                  <h3 className="text-xs font-bold text-indigo-300">Add a new brand / restaurant source</h3>
                   <div className="grid grid-cols-2 gap-2">
                     <div className="space-y-1">
-                      <label className="text-[9px] text-white/50 block font-bold">RESTAURANT NAME</label>
+                      <label className="text-[9px] text-white/50 block font-bold">BRAND / RESTAURANT NAME</label>
                       <input
                         type="text"
                         className="w-full bg-slate-900 border border-white/10 rounded px-2.5 py-1.5 text-xs text-white"
-                        placeholder="e.g. Pret A Manger"
+                        placeholder="e.g. Sainsbury's or Pret A Manger"
                         value={addChainForm.display_name}
                         onChange={(e) => setAddChainForm({ ...addChainForm, display_name: e.target.value })}
                       />
@@ -1580,7 +1580,7 @@ export default function NutritionDataBrowserModal({ isOpen, onClose }: Nutrition
                       <input
                         type="text"
                         className="w-full bg-slate-900 border border-white/10 rounded px-2.5 py-1.5 text-xs text-white"
-                        placeholder="e.g. pret"
+                        placeholder="e.g. sainsbury"
                         value={addChainForm.chain_key}
                         onChange={(e) => setAddChainForm({ ...addChainForm, chain_key: e.target.value.toLowerCase().replace(/[^a-z0-9]+/g, '_') })}
                       />
@@ -1623,7 +1623,7 @@ export default function NutritionDataBrowserModal({ isOpen, onClose }: Nutrition
                 className="w-full text-xs font-bold px-3 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white flex items-center justify-center gap-1"
               >
                 <Plus className="w-3.5 h-3.5" />
-                Add Restaurant
+                Add Branded Food / Restaurant
               </button>
             </div>
           )}

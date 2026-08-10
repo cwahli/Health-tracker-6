@@ -151,9 +151,10 @@ export function NutritionLabelTable({ activeScoutItems, onConfirmItem, defaultOp
     // confirms it is real truth (OCR label or curated brand/chain data). Estimated or
     // component-summed reference data must never render in the label card — it belongs
     // only in the calculation table as clearly-marked estimates.
-    const isRealTruth = item.dbSource === 'label' || item.dbSource === 'brand_official' || item.dbSource === 'label_partial' || Boolean(item.isRealTruth);
-    if ((!correctedRaw || typeof correctedRaw !== 'object' || Object.keys(correctedRaw).length === 0) && isRealTruth && item.labelNutrientsPerServing) {
-      const source = item.labelNutrientsPerServing;
+    const isRealTruth = item.dbSource === 'label' || item.dbSource === 'brand_official' || item.dbSource === 'label_partial' || item.dbSource === 'off' || Boolean(item.isRealTruth);
+    const labelSource = item.labelNutrientsPerServing || item.primaryBase100g;
+    if ((!correctedRaw || typeof correctedRaw !== 'object' || Object.keys(correctedRaw).length === 0) && isRealTruth && labelSource) {
+      const source = labelSource;
       if (source && typeof source === 'object') {
         const cals = source.calories ?? source.energy;
         if (cals != null) {
@@ -301,7 +302,7 @@ export function NutritionLabelTable({ activeScoutItems, onConfirmItem, defaultOp
                       {' · '}
                     </>
                   ) : null}
-                  {item.labelProductName || item.scoutOriginalName || item.originalName || item.keyword}
+                  {item.primaryBaseMatchName || item.labelProductName || item.scoutOriginalName || item.originalName || item.keyword}
                 </strong>
 
                 <div className="flex flex-wrap gap-x-4 gap-y-1 mb-3 text-[10px]">
@@ -348,7 +349,7 @@ export function NutritionLabelTable({ activeScoutItems, onConfirmItem, defaultOp
                           <th className="py-1.5 px-2 font-bold text-theme-text-secondary border-b border-theme-border/50">
                             {(() => {
                                const ssRaw = String(item.rawNutritionLabel?.servingSize || item.nutritionFacts?.servingSize || '').trim();
-                               const totalG = item.estimatedWeightGrams ? Number(item.estimatedWeightGrams) : null;
+                               const totalG = (item.primaryBaseWeightG || item.estimatedWeightGrams) ? Number(item.primaryBaseWeightG || item.estimatedWeightGrams) : null;
                                const ssGramsMatch = ssRaw.match(/^(\d+(?:\.\d+)?)\s*g$/i);
                                // If the serving size grams exactly equal the Total column's grams, showing
                                // both is redundant (e.g. "Serving Size (300g)" next to "Total (300g)").
@@ -365,7 +366,7 @@ export function NutritionLabelTable({ activeScoutItems, onConfirmItem, defaultOp
                             })()}
                           </th>
                           <th className="py-1.5 px-2 font-bold text-theme-text-secondary border-b border-theme-border/50 whitespace-nowrap">
-                            Total{item.estimatedWeightGrams ? ` (${item.estimatedWeightGrams}g)` : ''}
+                            Total{(item.primaryBaseWeightG || item.estimatedWeightGrams) ? ` (${item.primaryBaseWeightG || item.estimatedWeightGrams}g)` : ''}
                           </th>
                         </tr>
                       </thead>
@@ -407,17 +408,18 @@ export function NutritionLabelTable({ activeScoutItems, onConfirmItem, defaultOp
                               const bType = item.rawNutritionLabel?.basisType || item.basisType || (item.source === 'brand_official' || item.brandPriority ? 'per_dish' : 'per_100g');
                               const isDishBasis = bType === 'per_dish' || bType === 'total' || bType === 'per_portion' || bType === 'per_serving' || bType === 'per_pack';
 
-                              let labelServingGrams = isDishBasis ? (item.estimatedWeightGrams || 100) : 100;
+                              const weightToDisplay = item.primaryBaseWeightG || item.estimatedWeightGrams || 100;
+                              let labelServingGrams = isDishBasis ? weightToDisplay : 100;
                               const wasFromRaw = item.rawNutritionLabel?.[k] !== undefined;
                               
                               if (wasFromRaw && item.rawNutritionLabel?.servingSize) {
                                  const ssRaw = String(item.rawNutritionLabel.servingSize);
-                                 labelServingGrams = parseServingSizeGrams(ssRaw, item.estimatedWeightGrams || 100);
+                                 labelServingGrams = parseServingSizeGrams(ssRaw, weightToDisplay);
                               }
                               
-                              const multiplier = (isDishBasis && (labelServingGrams === (item.estimatedWeightGrams || 100) || labelServingGrams === 100))
+                              const multiplier = (isDishBasis && (labelServingGrams === weightToDisplay || labelServingGrams === 100))
                                 ? 1.0 
-                                : (item.estimatedWeightGrams / labelServingGrams);
+                                : (weightToDisplay / labelServingGrams);
                               const total = (numVal * multiplier).toFixed(1).replace(/\.0$/, '');
                               totalStr = `${total}${unit}`;
                             }

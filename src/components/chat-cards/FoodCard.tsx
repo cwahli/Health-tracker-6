@@ -667,6 +667,46 @@ const LiveBackendStreamViewer = ({ logs }: { logs: string }) => {
   const matchRefs = React.useRef<(HTMLSpanElement | null)[]>([]);
   const scrollContainerRef = React.useRef<HTMLDivElement>(null);
   const isFirstStreamRef = React.useRef(true);
+  const [fetchedR2Logs, setFetchedR2Logs] = React.useState<string | null>(null);
+  const [isFetchingR2, setIsFetchingR2] = React.useState<boolean>(false);
+
+  React.useEffect(() => {
+    if (!logs) return;
+    const urlMatch = logs.match(/(https?:\/\/[^\s\]"]+\.r2\.dev\/logs\/[^\s\]"]+)/i) || logs.match(/\[Logs stored in R2:\s*(https?:\/\/[^\s\]]+)\]/i);
+    if (urlMatch) {
+      const url = urlMatch[1] || urlMatch[0];
+      if (url && !fetchedR2Logs && !isFetchingR2) {
+        setIsFetchingR2(true);
+        fetch(url)
+          .then(res => {
+            if (!res.ok) throw new Error(`R2 direct fetch HTTP ${res.status}`);
+            return res.text();
+          })
+          .then(text => {
+            if (text && text.trim().length > 0) {
+              setFetchedR2Logs(text);
+            }
+          })
+          .catch(async (err) => {
+            console.warn('[LiveBackendStreamViewer] Direct R2 fetch failed, trying proxy:', err);
+            try {
+              const proxyRes = await fetch(`/api/r2/log-proxy?url=${encodeURIComponent(url)}`);
+              if (proxyRes.ok) {
+                const proxyText = await proxyRes.text();
+                if (proxyText && proxyText.trim().length > 0) {
+                  setFetchedR2Logs(proxyText);
+                }
+              }
+            } catch (proxyErr) {
+              console.warn('[LiveBackendStreamViewer] Proxy R2 log fetch failed:', proxyErr);
+            }
+          })
+          .finally(() => setIsFetchingR2(false));
+      }
+    }
+  }, [logs, fetchedR2Logs, isFetchingR2]);
+
+  const effectiveLogs = fetchedR2Logs || logs || '';
 
   React.useEffect(() => {
     // Scroll internal log container to bottom without scrolling browser viewport
@@ -674,7 +714,7 @@ const LiveBackendStreamViewer = ({ logs }: { logs: string }) => {
       scrollContainerRef.current.scrollTop = scrollContainerRef.current.scrollHeight;
     }
     // Set browser viewport scroll to top (below header) when stream starts
-    if (logs && isFirstStreamRef.current) {
+    if (effectiveLogs && isFirstStreamRef.current) {
       isFirstStreamRef.current = false;
       const mainContainer = document.getElementById('main-scroll-container');
       if (mainContainer) {
@@ -683,7 +723,7 @@ const LiveBackendStreamViewer = ({ logs }: { logs: string }) => {
         window.scrollTo({ top: 0, behavior: 'smooth' });
       }
     }
-  }, [logs]);
+  }, [effectiveLogs]);
 
   const ERROR_PATTERN = /error|exception|failed to/i;
   const WARNING_PATTERN = /warn|quota exceeded|429|timed out|retry/i;
@@ -692,7 +732,7 @@ const LiveBackendStreamViewer = ({ logs }: { logs: string }) => {
   // were previously never matching at all, so they never got tabbed.
   const TAG_PATTERN = /^\[([A-Za-z0-9_ \-:]+)\](?:\[(\d+)\])?\s?(.*)$/;
 
-  const lines = React.useMemo(() => (logs || '').split('\n'), [logs]);
+  const lines = React.useMemo(() => (effectiveLogs || '').split('\n'), [effectiveLogs]);
 
   // Parse the [logType][timestamp] tag embedded by the client SSE parser.
   // A single logical log entry (e.g. a full system instruction) can span many
@@ -1625,7 +1665,14 @@ export const FoodCard: React.FC<AgentCardProps & {
         ingredientsList: matchingScout?.ingredientsList || item.ingredientsList,
         visualIngredients: matchingScout?.visualIngredients || item.visualIngredients,
         nutritionFacts: matchingScout?.nutritionFacts || item.nutritionFacts,
-        source: matchingScout?.source || item.source
+        source: matchingScout?.source || item.source,
+        dbSource: item.dbSource || matchingScout?.dbSource || null,
+        dbId: item.dbId || matchingScout?.dbId || null,
+        isRealTruth: item.isRealTruth || item.dbSource === 'brand_official' || item.dbSource === 'label' || item.dbSource === 'label_partial',
+        labelNutrientsPerServing: item.labelNutrientsPerServing || item.primaryBase100g || matchingScout?.labelNutrientsPerServing || null,
+        primaryBase100g: item.primaryBase100g || null,
+        primaryBaseMatchName: item.primaryBaseMatchName || item.canonicalDbName || null,
+        componentsDetailList: item.componentsDetailList || []
       };
     });
   }, [activeScoutItems, msg.data]);

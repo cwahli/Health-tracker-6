@@ -19,9 +19,29 @@ function getFirestoreDb() {
   return getFirestore(getApps()[0], dbId);
 }
 
+export function sanitizeDishTitle(title: string): string {
+  if (!title || typeof title !== 'string') return '';
+  let cleaned = title.trim();
+
+  // Strip leading portion patterns: 60g, 100g, 100.5g, 200ml, 1.5kg, 2oz, 1/2 cup, 1 cup, 2 servings, 3 slices, 1 bowl, 1 plate, etc.
+  cleaned = cleaned.replace(/^\s*(\d+(\.\d+)?|\d+\/\d+)\s*(g|kg|ml|l|oz|lbs?|cups?|pack|pkg|servings?|slices?|pcs?|pieces?|bowls?|mugs?|plates?|tbsps?|tsps?)\b\s*(of\s+)?/gi, '');
+
+  // Strip leading numbers followed by dot/dash/colon/space if followed by text (e.g. "1. Sainsbury oats")
+  cleaned = cleaned.replace(/^\s*\d+[\s\-:\–\.]+\s*(?=[a-zA-Z])/, '');
+
+  // Strip trailing portion descriptions like "(60g)", "(100 g)", "(1 serving)"
+  cleaned = cleaned.replace(/\s*\(\s*(\d+(\.\d+)?|\d+\/\d+)\s*(g|kg|ml|l|oz|lbs?|cups?|pack|pkg|servings?|slices?|pcs?|pieces?|bowls?|mugs?|plates?|tbsps?|tsps?)\s*\)\s*$/gi, '');
+
+  // Clean up extra spaces or trailing/leading punctuation
+  cleaned = cleaned.replace(/\s+/g, ' ').replace(/^[\s,.\-:_]+|[\s,.\-:_]+$/g, '').trim();
+
+  return cleaned || title.trim();
+}
+
 export function normalizeDishKey(raw: string): string {
   if (!raw) return '';
-  return raw
+  const sanitized = sanitizeDishTitle(raw);
+  return sanitized
     .toLowerCase()
     .replace(/\s*\(v[eg]?\)\s*/gi, '') // strip (ve), (v), (vg) diet markers
     .replace(/['']/g, '')               // strip smart apostrophes
@@ -52,6 +72,250 @@ export function normalizeChainKey(name: string): string {
   return str;
 }
 
+const inFlightRegisterLocks = new Set<string>();
+
+export function isUnofficialOrCompositeDish(
+  dishName: string,
+  chainKey?: string,
+  provenance?: string,
+  notes?: string,
+  itemObj?: any
+): { isUnofficial: boolean; reason?: string } {
+  const name = String(dishName || '').trim();
+  if (!name) return { isUnofficial: true, reason: 'Empty dish name' };
+  const nameLower = name.toLowerCase();
+
+  const normChain = chainKey ? normalizeChainKey(chainKey) : '';
+  if (normChain && ['generic', 'unknown', 'home_cooked', 'estimated', 'none', 'home', 'custom'].includes(normChain)) {
+    return { isUnofficial: true, reason: `Non-brand chain key "${chainKey}"` };
+  }
+
+  if (itemObj) {
+    if (
+      itemObj.isDecomposed === true ||
+      itemObj.isCustomRecipe === true ||
+      itemObj.isEstimated === true ||
+      itemObj.isComputed === true ||
+      itemObj.isUserPromptCombination === true ||
+      itemObj.hasCompositeComponents === true
+    ) {
+      return { isUnofficial: true, reason: 'Item flagged as computed/decomposed/custom' };
+    }
+
+    if (Array.isArray(itemObj.components) && itemObj.components.length > 1) {
+      return { isUnofficial: true, reason: `Item has ${itemObj.components.length} decomposed sub-components` };
+    }
+
+    const src = String(itemObj.source || '').toLowerCase();
+    if (['visual', 'prompt', 'user_prompt', 'user', 'estimate', 'computed'].includes(src)) {
+      return { isUnofficial: true, reason: `Item source is "${src}" (not official printed label)` };
+    }
+  }
+
+  const provStr = String(provenance || '').toLowerCase();
+  const notesStr = String(notes || '').toLowerCase();
+  if (
+    provStr.includes('decomposed') ||
+    provStr.includes('user_prompt') ||
+    provStr.includes('composite') ||
+    provStr.includes('computed') ||
+    notesStr.includes('decomposed') ||
+    notesStr.includes('user_prompt') ||
+    notesStr.includes('composite') ||
+    notesStr.includes('computed')
+  ) {
+    return { isUnofficial: true, reason: 'Provenance or notes indicate composite or computed item' };
+  }
+
+  // Check if title starts with portion / weight specification (e.g. "60g Sainsbury oat")
+  const leadingPortionRegex = /^\s*(\d+(\.\d+)?|\d+\/\d+)\s*(g|kg|ml|l|oz|lbs?|cups?|pack|pkg|servings?|slices?|pcs?|pieces?|bowls?|mugs?|plates?|tbsps?|tsps?)\b/i;
+  if (leadingPortionRegex.test(name)) {
+    return { isUnofficial: true, reason: `Title starts with portion size prefix ("${name.match(leadingPortionRegex)?.[0]}")` };
+  }
+
+  // Combination/composite modifier phrase (e.g. "oat with milk", "chicken plus rice", "cooked in butter")
+  const combinationRegex = /\b(with|plus|\+|\&|and|cooked in|added|decomposed|served with)\s+(milk|butter|egg|cheese|sugar|honey|cream|water|oil|sauce|dressing|topping|side|bread|toast|chips|fries|rice)\b/i;
+  if (combinationRegex.test(nameLower)) {
+    return { isUnofficial: true, reason: `Title contains composite combination phrase ("${nameLower.match(combinationRegex)?.[0]}")` };
+  }
+
+  // Generic/recipe keywords
+  const genericKeywordsRegex = /\b(homemade|custom|estimated|decomposed|combined|user_prompt|recipe|approx|approximate|computed|calculated)\b/i;
+  if (genericKeywordsRegex.test(nameLower)) {
+    return { isUnofficial: true, reason: `Title contains generic recipe/estimation keyword ("${nameLower.match(genericKeywordsRegex)?.[0]}")` };
+  }
+
+  return { isUnofficial: false };
+}
+
+export async function selfCleanBrandDatabase(
+  supabaseAdmin: any,
+  countryCode: string = 'GB',
+  addDebugLog?: (msg: string) => void
+): Promise<{
+  removedUnofficialCount: number;
+  deletedDuplicatesCount: number;
+  updatedChainsCount: number;
+  details: string[];
+}> {
+  const log = addDebugLog || console.log;
+  let removedUnofficialCount = 0;
+  let deletedDuplicatesCount = 0;
+  const details: string[] = [];
+
+  try {
+    let query = supabaseAdmin
+      .from('brand_menu_items')
+      .select('id, country_code, chain_key, dish_name, dish_name_key, nutrients, ingredients, capture_count, confidence, provenance, notes, updated_at');
+
+    if (countryCode) {
+      query = query.eq('country_code', countryCode);
+    }
+
+    const { data: items, error } = await query;
+    if (error || !items || items.length === 0) {
+      return { removedUnofficialCount: 0, deletedDuplicatesCount: 0, updatedChainsCount: 0, details: [] };
+    }
+
+    const unofficialIds: string[] = [];
+    const validItems: typeof items = [];
+
+    for (const item of items) {
+      const check = isUnofficialOrCompositeDish(item.dish_name, item.chain_key, item.provenance, item.notes, item);
+      if (check.isUnofficial) {
+        log(`[SelfClean] Flagged unofficial/decomposed item "${item.dish_name}" (ID ${item.id}, Chain "${item.chain_key}") for removal: ${check.reason}`);
+        unofficialIds.push(item.id);
+        details.push(`Removed unofficial item "${item.dish_name}" (${item.chain_key}): ${check.reason}`);
+      } else {
+        validItems.push(item);
+      }
+    }
+
+    if (unofficialIds.length > 0) {
+      const { error: delErr } = await supabaseAdmin
+        .from('brand_menu_items')
+        .delete()
+        .in('id', unofficialIds);
+      if (!delErr) {
+        removedUnofficialCount = unofficialIds.length;
+        log(`[SelfClean] Successfully purged ${removedUnofficialCount} unofficial/decomposed item(s) from brand database.`);
+      } else {
+        log(`[SelfClean] Warning: Failed to delete unofficial IDs: ${delErr.message}`);
+      }
+    }
+
+    const chainGroups = new Map<string, typeof validItems>();
+    for (const item of validItems) {
+      const key = `${item.country_code || 'GB'}:${item.chain_key}`;
+      const list = chainGroups.get(key) || [];
+      list.push(item);
+      chainGroups.set(key, list);
+    }
+
+    let updatedChainsCount = 0;
+    for (const [groupKey] of chainGroups.entries()) {
+      const [cCode, cKey] = groupKey.split(':');
+      const delCount = await cleanupDuplicateBrandMenuItems(supabaseAdmin, cCode, cKey, log);
+      if (delCount > 0) {
+        deletedDuplicatesCount += delCount;
+        updatedChainsCount++;
+      }
+    }
+
+    log(`[SelfClean] Complete! Removed ${removedUnofficialCount} unofficial item(s), deleted ${deletedDuplicatesCount} duplicate(s) across ${updatedChainsCount} chain(s).`);
+
+    return {
+      removedUnofficialCount,
+      deletedDuplicatesCount,
+      updatedChainsCount,
+      details,
+    };
+  } catch (e: any) {
+    log(`[SelfClean] Error during self-cleaning: ${e?.message || e}`);
+    return {
+      removedUnofficialCount,
+      deletedDuplicatesCount,
+      updatedChainsCount: 0,
+      details: [`Error: ${e?.message || e}`],
+    };
+  }
+}
+
+export async function cleanupDuplicateBrandMenuItems(
+  supabaseAdmin: any,
+  countryCode: string,
+  chainKey: string,
+  addDebugLog?: (msg: string) => void
+): Promise<number> {
+  const log = addDebugLog || console.log;
+  try {
+    const { data: items, error } = await supabaseAdmin
+      .from('brand_menu_items')
+      .select('id, dish_name, dish_name_key, nutrients, ingredients, capture_count, confidence, updated_at')
+      .eq('country_code', countryCode)
+      .eq('chain_key', chainKey);
+
+    if (error || !items || items.length === 0) return 0;
+
+    let deletedCount = 0;
+    const groups = new Map<string, typeof items>();
+
+    for (const item of items) {
+      const cleanTitle = sanitizeDishTitle(item.dish_name);
+      const cleanKey = normalizeDishKey(cleanTitle);
+
+      if (item.dish_name !== cleanTitle || item.dish_name_key !== cleanKey) {
+        log(`[Cleanup] Sanitizing malformed dish title "${item.dish_name}" -> "${cleanTitle}" (${cleanKey})`);
+        await supabaseAdmin
+          .from('brand_menu_items')
+          .update({ dish_name: cleanTitle, dish_name_key: cleanKey })
+          .eq('id', item.id);
+        item.dish_name = cleanTitle;
+        item.dish_name_key = cleanKey;
+      }
+
+      const list = groups.get(cleanKey) || [];
+      list.push(item);
+      groups.set(cleanKey, list);
+    }
+
+    for (const [key, group] of groups.entries()) {
+      if (group.length <= 1) continue;
+
+      group.sort((a, b) => {
+        const cDiff = (b.capture_count || 1) - (a.capture_count || 1);
+        if (cDiff !== 0) return cDiff;
+        const confDiff = (b.confidence || 0) - (a.confidence || 0);
+        if (confDiff !== 0) return confDiff;
+        return String(a.id).localeCompare(String(b.id));
+      });
+
+      const primary = group[0];
+      const duplicates = group.slice(1);
+      const duplicateIds = duplicates.map(d => d.id).filter(Boolean);
+
+      if (duplicateIds.length > 0) {
+        log(`[Cleanup] Deleting ${duplicateIds.length} duplicate record(s) for dish key "${key}" under chain "${chainKey}" (keeping ID ${primary.id}).`);
+        const { error: delErr } = await supabaseAdmin
+          .from('brand_menu_items')
+          .delete()
+          .in('id', duplicateIds);
+
+        if (!delErr) {
+          deletedCount += duplicateIds.length;
+        } else {
+          log(`[Cleanup] Warning: Failed to delete duplicate IDs: ${delErr.message}`);
+        }
+      }
+    }
+
+    return deletedCount;
+  } catch (e: any) {
+    log(`[Cleanup] Error during brand menu cleanup: ${e?.message || e}`);
+    return 0;
+  }
+}
+
 export async function autoRegisterChainMenuItem(
   supabaseAdmin: any,
   item: any,
@@ -59,172 +323,198 @@ export async function autoRegisterChainMenuItem(
   addDebugLog: (msg: string) => void
 ): Promise<void> {
   try {
-    const chainName = String(item?.chainName || '').trim();
-    const dishName = String(item?.originalName || item?.name || item?.dishName || '').trim();
+    const rawChainName = String(item?.chainName || '').trim();
+    const rawDishName = String(item?.originalName || item?.name || item?.dishName || '').trim();
+    const dishName = sanitizeDishTitle(rawDishName);
     const rawLabel = item?.rawNutritionLabel;
-    if (!chainName || !dishName || !rawLabel || typeof rawLabel !== 'object') return;
+    if (!rawChainName || !dishName || !rawLabel || typeof rawLabel !== 'object') return;
 
-    const lockedKeysList = Array.isArray(item?.lockedNutrientKeys) ? item.lockedNutrientKeys : null;
-    const lockedKeysSet = lockedKeysList ? new Set(lockedKeysList.map((k: string) => k.toLowerCase())) : null;
-
-    const nutrients: Record<string, number> = {};
-    const fieldMap: Record<string, string> = {
-      calories: 'calories', protein: 'protein', totalFat: 'totalFat',
-      saturatedFat: 'saturatedFat', carbohydrates: 'carbohydrates', totalCarbohydrate: 'carbohydrates',
-      sugar: 'sugar', totalFibre: 'totalFibre', sodium: 'sodium', salt: 'salt'
-    };
-    for (const [rawKey, outKey] of Object.entries(fieldMap)) {
-      if (lockedKeysSet) {
-        const normOutKey = outKey.toLowerCase();
-        const isLockedField = lockedKeysSet.has(normOutKey) ||
-          (normOutKey === 'carbohydrates' && (lockedKeysSet.has('carbohydrate') || lockedKeysSet.has('carbs'))) ||
-          (normOutKey === 'totalfat' && lockedKeysSet.has('fat')) ||
-          (normOutKey === 'totalfibre' && (lockedKeysSet.has('fiber') || lockedKeysSet.has('fibre')));
-
-        if (!isLockedField) {
-          addDebugLog(`[AutoChainRegister] Omitting AI-estimated field '${outKey}' from official brand database save for "${dishName}" (only printed truth is stored).`);
-          continue;
-        }
-      }
-
-      const n = parseNutrientNumber(rawLabel[rawKey]);
-      if (n !== null) nutrients[outKey] = n;
-    }
-    if (Object.keys(nutrients).length === 0) return; // guard: at least one official nutrient required
-
-    const chain_key = normalizeChainKey(chainName);
-    const dish_name_key = normalizeDishKey(dishName);
-    if (!chain_key || !dish_name_key) return;
-
-    // Determine basis_type + serving_grams from serving size raw or item weight.
-    // IMPORTANT: This function only ever registers restaurant/chain dishes, not packaged goods.
-    // Pass assumeDishNotPackage=true so an unlabeled calorie number is treated as a whole-dish
-    // total (e.g. "783 kcal" for a sandwich), never as a per-100g rate.
-    const ssRaw = String(rawLabel.servingSize || rawLabel.servingSizeRaw || '').trim();
-    const estWeight = parseNutrientNumber(item?.estimatedWeightGrams);
-    const ssLooksLikePackage100g =
-      /100\s*g/i.test(ssRaw) ||
-      /per\s*100/i.test(ssRaw) ||
-      /^100(\.0+)?\s*g?$/i.test(ssRaw.trim());
-    const assumeDishNotPackage = !ssRaw || (!ssLooksLikePackage100g && !/\d+\s*(g|ml)\b/i.test(ssRaw));
-    const basisInfo = ssLooksLikePackage100g
-      ? { basisType: 'per_100g' as const, servingGrams: 100 }
-      : inferBasisFromServingText(ssRaw, estWeight, assumeDishNotPackage);
-    const basis_type = basisInfo.basisType;
-    const serving_grams = basisInfo.servingGrams;
-
-    const nutrients_per_100g = toPer100g({
-      basisType: basis_type,
-      servingGrams: serving_grams,
-      nutrients: nutrients,
-    });
-
-    // Upsert chain_menu_sources placeholder, marked ready since we have real captured data (soft fail ok)
-    try {
-      const sourceUrl = `crowdsourced://ocr/${chain_key}`;
-      const nowIso = new Date().toISOString();
-      await supabaseAdmin.from('chain_menu_sources').upsert({
-        chain_key,
-        country_code: countryCode,
-        url: sourceUrl,
-        status: 'ready',
-        enabled: true,
-        last_success_at: nowIso,
-        updated_at: nowIso,
-      }, { onConflict: 'country_code,chain_key,url' });
-    } catch (e: any) {
-      // Soft-fail OK if table missing or schema differs
-    }
-
-    const { data: existing, error: lookupErr } = await supabaseAdmin
-      .from('brand_menu_items')
-      .select('*')
-      .eq('country_code', countryCode)
-      .eq('chain_key', chain_key)
-      .eq('dish_name_key', dish_name_key)
-      .maybeSingle();
-
-    if (lookupErr) {
-      addDebugLog(`[AutoChainRegister] lookup error, skipping: ${lookupErr.message}`);
+    const checkUnofficial = isUnofficialOrCompositeDish(rawDishName, rawChainName, item?.provenance, item?.notes, item);
+    if (checkUnofficial.isUnofficial) {
+      addDebugLog(`[AutoChainRegister] REJECTED unofficial/computed item "${rawDishName}" for chain "${rawChainName}": ${checkUnofficial.reason}`);
       return;
     }
 
-    const isPlaceholderIngredientText = (s: any) => typeof s === 'string' && s.trim().toLowerCase().startsWith('auto-captured from photo ocr');
-    const rawIngredients = item?.ingredientsList || item?.ingredients || rawLabel?.ingredients || null;
-    const ingredients = isPlaceholderIngredientText(rawIngredients) ? null : rawIngredients;
-    const isPartialLocked = lockedKeysList && lockedKeysList.length > 0 && Object.keys(nutrients).length < 4;
+    const chain_key = normalizeChainKey(rawChainName);
+    const dish_name_key = normalizeDishKey(dishName);
+    if (!chain_key || !dish_name_key || ['unknown', 'home_cooked', 'generic', 'estimated', 'none'].includes(chain_key)) return;
 
-    if (!existing) {
-      const row = {
-        country_code: countryCode,
-        chain_key,
-        dish_name: dishName,
-        dish_name_key,
-        serving_grams,
-        basis_type,
-        nutrients,
-        nutrients_per_100g,
-        ingredients,
-        provenance: isPartialLocked ? 'ocr_partial' : 'ocr_auto',
-        confidence: isPartialLocked ? 0.45 : 0.55,
-        capture_count: 1,
-        source_url: `crowdsourced://ocr/${chain_key}`,
-        notes: isPartialLocked
-          ? `Auto-captured from photo OCR (Official printed keys: ${lockedKeysList.join(', ')})`
-          : 'Auto-captured from photo OCR',
-        enabled: true,
-        updated_at: new Date().toISOString(),
+    const lockKey = `${countryCode}:${chain_key}:${dish_name_key}`;
+    if (inFlightRegisterLocks.has(lockKey)) {
+      addDebugLog(`[AutoChainRegister] Concurrent registration lock active for "${dishName}" (${chain_key}); skipping duplicate write.`);
+      return;
+    }
+    inFlightRegisterLocks.add(lockKey);
+
+    try {
+      const lockedKeysList = Array.isArray(item?.lockedNutrientKeys) ? item.lockedNutrientKeys : null;
+      const lockedKeysSet = lockedKeysList ? new Set(lockedKeysList.map((k: string) => k.toLowerCase())) : null;
+
+      const nutrients: Record<string, number> = {};
+      const fieldMap: Record<string, string> = {
+        calories: 'calories', protein: 'protein', totalFat: 'totalFat',
+        saturatedFat: 'saturatedFat', carbohydrates: 'carbohydrates', totalCarbohydrate: 'carbohydrates',
+        sugar: 'sugar', totalFibre: 'totalFibre', sodium: 'sodium', salt: 'salt'
       };
-      const { error: insertErr } = await supabaseAdmin.from('brand_menu_items').insert(row);
-      if (insertErr) {
-        addDebugLog(`[AutoChainRegister] insert failed for "${dishName}": ${insertErr.message}`);
-      } else {
-        addDebugLog(`[AutoChainRegister] Registered new dish "${dishName}" for chain "${chain_key}" with ${Object.keys(nutrients).length} official fields.`);
+      for (const [rawKey, outKey] of Object.entries(fieldMap)) {
+        if (lockedKeysSet) {
+          const normOutKey = outKey.toLowerCase();
+          const isLockedField = lockedKeysSet.has(normOutKey) ||
+            (normOutKey === 'carbohydrates' && (lockedKeysSet.has('carbohydrate') || lockedKeysSet.has('carbs'))) ||
+            (normOutKey === 'totalfat' && lockedKeysSet.has('fat')) ||
+            (normOutKey === 'totalfibre' && (lockedKeysSet.has('fiber') || lockedKeysSet.has('fibre')));
+
+          if (!isLockedField) {
+            addDebugLog(`[AutoChainRegister] Omitting AI-estimated field '${outKey}' from official brand database save for "${dishName}" (only printed truth is stored).`);
+            continue;
+          }
+        }
+
+        const n = parseNutrientNumber(rawLabel[rawKey]);
+        if (n !== null) nutrients[outKey] = n;
       }
-    } else {
-      // Exists: Fill null nutrients, null ingredients, null serving_grams. Increment capture_count & confidence.
-      const existingNutrients = existing.nutrients || {};
-      const mergedNutrients: Record<string, number> = { ...existingNutrients };
-      for (const [k, v] of Object.entries(nutrients)) {
-        if (existingNutrients[k] === null || existingNutrients[k] === undefined) {
-          mergedNutrients[k] = v;
+      if (Object.keys(nutrients).length === 0) return; // guard: at least one official nutrient required
+
+      const ssRaw = String(rawLabel.servingSize || rawLabel.servingSizeRaw || '').trim();
+      const estWeight = parseNutrientNumber(item?.estimatedWeightGrams);
+      const ssLooksLikePackage100g =
+        /100\s*g/i.test(ssRaw) ||
+        /per\s*100/i.test(ssRaw) ||
+        /^100(\.0+)?\s*g?$/i.test(ssRaw.trim());
+      const assumeDishNotPackage = !ssRaw || (!ssLooksLikePackage100g && !/\d+\s*(g|ml)\b/i.test(ssRaw));
+      const basisInfo = ssLooksLikePackage100g
+        ? { basisType: 'per_100g' as const, servingGrams: 100 }
+        : inferBasisFromServingText(ssRaw, estWeight, assumeDishNotPackage);
+      const basis_type = basisInfo.basisType;
+      const serving_grams = basisInfo.servingGrams;
+
+      const nutrients_per_100g = toPer100g({
+        basisType: basis_type,
+        servingGrams: serving_grams,
+        nutrients: nutrients,
+      });
+
+      // Upsert chain_menu_sources placeholder, marked ready since we have real captured data
+      try {
+        const sourceUrl = `crowdsourced://ocr/${chain_key}`;
+        const nowIso = new Date().toISOString();
+        await supabaseAdmin.from('chain_menu_sources').upsert({
+          chain_key,
+          country_code: countryCode,
+          url: sourceUrl,
+          status: 'ready',
+          enabled: true,
+          last_success_at: nowIso,
+          updated_at: nowIso,
+        }, { onConflict: 'country_code,chain_key,url' });
+      } catch (e: any) {
+        // Soft-fail OK
+      }
+
+      const { data: existingRows, error: lookupErr } = await supabaseAdmin
+        .from('brand_menu_items')
+        .select('*')
+        .eq('country_code', countryCode)
+        .eq('chain_key', chain_key)
+        .eq('dish_name_key', dish_name_key);
+
+      if (lookupErr) {
+        addDebugLog(`[AutoChainRegister] lookup error, skipping: ${lookupErr.message}`);
+        return;
+      }
+
+      const existing = existingRows && existingRows.length > 0 ? existingRows[0] : null;
+
+      if (existingRows && existingRows.length > 1) {
+        const extraIds = existingRows.slice(1).map((r: any) => r.id).filter(Boolean);
+        if (extraIds.length > 0) {
+          addDebugLog(`[AutoChainRegister] Deleting ${extraIds.length} duplicate record(s) for "${dishName}" (${chain_key}).`);
+          await supabaseAdmin.from('brand_menu_items').delete().in('id', extraIds);
         }
       }
 
-      const mergedNutrients100g = toPer100g({
-        basisType: existing.basis_type || basis_type,
-        servingGrams: existing.serving_grams || serving_grams,
-        nutrients: mergedNutrients,
-      });
+      const isPlaceholderIngredientText = (s: any) => typeof s === 'string' && s.trim().toLowerCase().startsWith('auto-captured from photo ocr');
+      const rawIngredients = item?.ingredientsList || item?.ingredients || rawLabel?.ingredients || null;
+      const ingredients = isPlaceholderIngredientText(rawIngredients) ? null : rawIngredients;
+      const isPartialLocked = lockedKeysList && lockedKeysList.length > 0 && Object.keys(nutrients).length < 4;
 
-      const updatedCaptureCount = (existing.capture_count || 1) + 1;
-      const updatedConfidence = Math.min(0.95, (existing.confidence || 0.5) + 0.05);
-
-      const updates: Record<string, any> = {
-        nutrients: mergedNutrients,
-        nutrients_per_100g: mergedNutrients100g,
-        capture_count: updatedCaptureCount,
-        confidence: updatedConfidence,
-        updated_at: new Date().toISOString(),
-      };
-
-      if ((existing.serving_grams === null || existing.serving_grams === undefined) && serving_grams) {
-        updates.serving_grams = serving_grams;
-      }
-      if (!existing.ingredients && ingredients) {
-        updates.ingredients = ingredients;
-      }
-
-      const { error: updateErr } = await supabaseAdmin
-        .from('brand_menu_items')
-        .update(updates)
-        .eq('id', existing.id);
-
-      if (updateErr) {
-        addDebugLog(`[AutoChainRegister] update failed for "${dishName}": ${updateErr.message}`);
+      if (!existing) {
+        const row = {
+          country_code: countryCode,
+          chain_key,
+          dish_name: dishName,
+          dish_name_key,
+          serving_grams,
+          basis_type,
+          nutrients,
+          nutrients_per_100g,
+          ingredients,
+          provenance: isPartialLocked ? 'ocr_partial' : 'ocr_auto',
+          confidence: isPartialLocked ? 0.45 : 0.55,
+          capture_count: 1,
+          source_url: `crowdsourced://ocr/${chain_key}`,
+          notes: isPartialLocked
+            ? `Auto-captured from photo OCR (Official printed keys: ${lockedKeysList.join(', ')})`
+            : 'Auto-captured from photo OCR',
+          enabled: true,
+          updated_at: new Date().toISOString(),
+        };
+        const { error: insertErr } = await supabaseAdmin.from('brand_menu_items').insert(row);
+        if (insertErr) {
+          addDebugLog(`[AutoChainRegister] insert failed for "${dishName}": ${insertErr.message}`);
+        } else {
+          addDebugLog(`[AutoChainRegister] Registered new dish "${dishName}" for chain "${chain_key}" with ${Object.keys(nutrients).length} official fields.`);
+        }
       } else {
-        addDebugLog(`[AutoChainRegister] Updated existing dish "${dishName}" (capture #${updatedCaptureCount}).`);
+        const existingNutrients = existing.nutrients || {};
+        const mergedNutrients: Record<string, number> = { ...existingNutrients };
+        for (const [k, v] of Object.entries(nutrients)) {
+          if (existingNutrients[k] === null || existingNutrients[k] === undefined) {
+            mergedNutrients[k] = v;
+          }
+        }
+
+        const mergedNutrients100g = toPer100g({
+          basisType: existing.basis_type || basis_type,
+          servingGrams: existing.serving_grams || serving_grams,
+          nutrients: mergedNutrients,
+        });
+
+        const updatedCaptureCount = (existing.capture_count || 1) + 1;
+        const updatedConfidence = Math.min(0.95, (existing.confidence || 0.5) + 0.05);
+
+        const updates: Record<string, any> = {
+          dish_name: dishName,
+          dish_name_key,
+          nutrients: mergedNutrients,
+          nutrients_per_100g: mergedNutrients100g,
+          capture_count: updatedCaptureCount,
+          confidence: updatedConfidence,
+          updated_at: new Date().toISOString(),
+        };
+
+        if ((existing.serving_grams === null || existing.serving_grams === undefined) && serving_grams) {
+          updates.serving_grams = serving_grams;
+        }
+        if (!existing.ingredients && ingredients) {
+          updates.ingredients = ingredients;
+        }
+
+        const { error: updateErr } = await supabaseAdmin
+          .from('brand_menu_items')
+          .update(updates)
+          .eq('id', existing.id);
+
+        if (updateErr) {
+          addDebugLog(`[AutoChainRegister] update failed for "${dishName}": ${updateErr.message}`);
+        } else {
+          addDebugLog(`[AutoChainRegister] Updated existing dish "${dishName}" (capture #${updatedCaptureCount}).`);
+        }
       }
+
+      cleanupDuplicateBrandMenuItems(supabaseAdmin, countryCode, chain_key, addDebugLog).catch(() => {});
+    } finally {
+      inFlightRegisterLocks.delete(lockKey);
     }
   } catch (e: any) {
     addDebugLog(`[AutoChainRegister] unexpected error: ${e?.message || e}`);

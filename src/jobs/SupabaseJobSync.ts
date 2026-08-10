@@ -75,7 +75,7 @@ export async function hydrateUserJobs(userId: string = 'anonymous'): Promise<voi
           status: row.status,
           progressPercent: row.progress_percent,
           statusMessage: row.status_message,
-          result: cleanRes || existing.result,
+          result: (cleanRes && !cleanRes.is_r2) ? cleanRes : (existing.result || cleanRes),
           mealBuild: cleanRes?.mealBuild || existing.mealBuild,
           photoUrl: photoUrl || row.photo_url || cleanRes?.photoUrl || existing.photoUrl,
           debugUrl: debugUrl || row.debug_url || cleanRes?.debugUrl || existing.debugUrl
@@ -168,15 +168,21 @@ export function initSupabaseJobSync(userId?: string): () => void {
           let cleanRes = row.clean_result;
           if (cleanRes && typeof cleanRes === 'object' && cleanRes.is_r2 && cleanRes.r2_url) {
             try {
-              const r = await fetch(cleanRes.r2_url);
+              // Bypassing client-side CORS issues by fetching through our own backend proxy endpoint
+              const baseUrl = typeof window !== 'undefined' ? '' : 'http://localhost:3000';
+              const r = await fetch(`${baseUrl}/api/jobs/status?jobId=${row.id}`);
               if (r.ok) {
-                const fetched = await r.json();
-                if (fetched) {
-                  cleanRes = fetched;
+                const fetchedWrapper = await r.json();
+                if (fetchedWrapper && fetchedWrapper.jobs && fetchedWrapper.jobs.length > 0) {
+                  // Our backend automatically unwraps the R2 result when fetching
+                  const backendJob = fetchedWrapper.jobs[0];
+                  if (backendJob && backendJob.clean_result) {
+                    cleanRes = backendJob.clean_result;
+                  }
                 }
               }
             } catch (err) {
-              console.warn('[SupabaseJobSync] Realtime R2 fetch failed:', err);
+              console.warn('[SupabaseJobSync] Realtime R2 fetch via backend failed:', err);
             }
           }
 
@@ -257,7 +263,7 @@ export function initSupabaseJobSync(userId?: string): () => void {
               progressPercent: row.progress_percent || 0,
               statusMessage: row.status_message || '',
               messages: updatedFields.messages || [],
-              result: cleanRes || undefined,
+              result: (cleanRes && !cleanRes.is_r2) ? cleanRes : undefined,
               photoUrl: rowPhotoUrl,
               debugUrl: rowDebugUrl,
               inputSnapshot: {

@@ -8,6 +8,7 @@ import { pushTranslationsToSheets, pullTranslationsFromSheets } from './server_t
 import { buildFoodAnalyzeInstruction, buildModeAReviewInstruction, buildModeAEditInstruction, buildModeDCompareInstruction, buildModeDEditInstruction, foodResolverSystemInstruction, buildFoodResolverPrompt } from './agents/index.js';
 import { ensureFoodCatalogSchema, resetFoodCatalogSchemaEnsure } from "./server_food_catalog_schema.js";
 import { resolveInternalFood, resolveDishCache, upsertFoodItemCandidate, upsertFoodAlias, upsertDishCacheCandidate, recordFoodObservation, recordSyncEvent, normalizeFoodKey, normalizeDishKey, getCatalogSyncStatus, mergeFoodCatalogItems, quarantineAtwaterFailures, checkAtwaterValidity, getFallbackCategoryProfile } from './server_food_catalog.js';
+import { sanitizeDishTitle, cleanupDuplicateBrandMenuItems, isGroceryBrandSync, selfCleanBrandDatabase, isUnofficialOrCompositeDish } from './serverBrandMenu.js';
 import {
   computeItemBudget,
   reconcileNutrients,
@@ -367,22 +368,30 @@ export async function executeFoodResolverAgent(
           }
         } else if (res.dishCore) {
           resultItem.nutrientsPer100g = res.dishCore;
-          const writeRes = await upsertDishCacheCandidate({
-            dish_key: normalizedKey,
-            display_name: res.query || (gap ? gap.query : ''),
-            core_nutrients: res.dishCore,
-            confidence: 0.65,
-            provenance: 'food_resolver_dish_core',
-          });
+          const cleanQ = sanitizeDishTitle(res.query || (gap ? gap.query : ''));
+          const normK = normalizeFoodKey(cleanQ);
+          const isBranded = isKnownDatabaseBrandSync(cleanQ) || isGroceryBrandSync(cleanQ);
 
-          if (writeRes.success) {
-            logEvent('food_resolver_supabase_write', `Persisted dish core candidate for "${res.query}" to dish_cache.`);
-          } else {
-            logEvent('food_resolver_error', `Failed to persist dish core candidate for "${res.query}" to dish_cache: ${writeRes.error}`);
-            await recordSyncEvent({
-              event_type: 'dish_cache_write_failure',
-              payload: { query: res.query || (gap ? gap.query : ''), error: writeRes.error }
+          if (cleanQ && normK && !isBranded && cleanQ.split(/\s+/).length <= 5) {
+            const writeRes = await upsertDishCacheCandidate({
+              dish_key: normK,
+              display_name: cleanQ,
+              core_nutrients: res.dishCore,
+              confidence: 0.65,
+              provenance: 'food_resolver_dish_core',
             });
+
+            if (writeRes.success) {
+              logEvent('food_resolver_supabase_write', `Persisted clean dish core candidate for "${cleanQ}" to dish_cache.`);
+            } else {
+              logEvent('food_resolver_error', `Failed to persist dish core candidate for "${cleanQ}" to dish_cache: ${writeRes.error}`);
+              await recordSyncEvent({
+                event_type: 'dish_cache_write_failure',
+                payload: { query: cleanQ, error: writeRes.error }
+              });
+            }
+          } else {
+            logEvent('food_resolver_skip', `Skipped persisting synthetic dishCore fallback for "${res.query}" (branded, portion-polluted, or complex query).`);
           }
         }
       }
@@ -1507,6 +1516,31 @@ app.post('/api/jobs/submit', async (req, res) => {
     if (!jobId) {
       return res.status(400).json({ error: 'jobId is required' });
     }
+
+    const { checkOrRegisterIdempotentSubmission, submitServerJob } = await import('./serverJobs');
+
+    // 1. Idempotency Check & In-Flight Lock
+    const idempResult = await checkOrRegisterIdempotentSubmission({
+      ...req.body,
+      jobId,
+      userId: userId || 'anonymous',
+      kind,
+      mode,
+      text,
+      images,
+      imageUrls
+    });
+
+    if (idempResult.isDuplicate) {
+      return res.json({
+        success: true,
+        jobId: idempResult.jobId,
+        status: idempResult.status || 'queued',
+        duplicatePrevented: true,
+        message: 'Duplicate submission blocked by idempotency lock; reusing existing job.'
+      });
+    }
+
     await submitServerJob({
       ...req.body,
       jobId,
@@ -1676,6 +1710,7 @@ app.get('/api/jobs/debug', async (req, res) => {
         photoUrl: job.photo_url,
         debugUrl: job.debug_url,
         result: job.clean_result,
+        backendLogsUrl: job.clean_result?.backendLogsUrl || undefined,
         backendLogs: job.clean_result?.backendLogs || '',
         createdAt: job.created_at,
         updatedAt: job.updated_at,
@@ -1683,9 +1718,50 @@ app.get('/api/jobs/debug', async (req, res) => {
       };
     }
 
+    if (!debugPayload.backendLogs || String(debugPayload.backendLogs).startsWith('[Logs stored in R2') || String(debugPayload.backendLogs).startsWith('http')) {
+      try {
+        const { fetchLogsFromR2 } = await import('./src/utils/r2Storage.js');
+        const logsFromR2 = await fetchLogsFromR2(job.id);
+        if (logsFromR2) {
+          debugPayload.backendLogs = logsFromR2;
+        }
+      } catch (logFetchErr) {
+        console.warn(`[JobsDebug] Failed to fetch full logs from R2 for ${job.id}:`, logFetchErr);
+      }
+    }
+
     // B9c / B14 — never return fat base64 meal photos in debug download
-    const { stripHeavyImages } = await import('./src/utils/debugPayload.js');
+    const { stripHeavyImages, buildDebugMarkdownReport } = await import('./src/utils/debugPayload.js');
     const safePayload = stripHeavyImages(debugPayload);
+
+    if (req.query.format === 'markdown' || req.query.format === 'md') {
+      const mdReport = buildDebugMarkdownReport({
+        jobId: String(jobId),
+        status: safePayload.status,
+        mode: safePayload.mode,
+        message: safePayload.result?.message || safePayload.result?.text,
+        backendLogs: safePayload.backendLogs,
+        pendingFoodLog: safePayload.result?.pendingFoodLog || safePayload.result,
+        scoutItems: safePayload.result?.scoutItems,
+        receiptTable: safePayload.result?.receiptTable || safePayload.result?.pendingFoodLog?.receiptTable,
+        error: safePayload.error,
+        debugUrl: safePayload.debugUrl,
+        photoUrl: safePayload.photoUrl,
+        lastUserAction: safePayload.result?.lastUserAction || safePayload.lastUserAction,
+        userActionBreadcrumbs: safePayload.result?.userActionBreadcrumbs || safePayload.userActionBreadcrumbs,
+        clientConsoleLogs: safePayload.result?.clientConsoleLogs || safePayload.clientConsoleLogs,
+        networkErrors: safePayload.result?.networkErrors || safePayload.networkErrors,
+        usdaSearchResults: safePayload.result?.usdaSearchResults,
+        brandSearchResults: safePayload.result?.brandSearchResults,
+        comprehensiveNutrients: safePayload.result?.comprehensiveNutrients || safePayload.result?.pendingFoodLog?.nutrients,
+        stageLedger: safePayload.result?.stageLedger,
+        historyLog: safePayload.result?.historyLog
+      });
+      res.setHeader('Content-Type', 'text/markdown; charset=utf-8');
+      res.setHeader('Content-Disposition', `attachment; filename="debug-${jobId}.md"`);
+      return res.send(mdReport);
+    }
+
     res.setHeader('Content-Type', 'application/json');
     res.setHeader('Content-Disposition', `attachment; filename="debug-${jobId}.json"`);
     res.json(safePayload);
@@ -1944,6 +2020,143 @@ app.post('/api/r2/migrate-firestore-images', async (req, res) => {
   }
 });
 
+app.post('/api/r2/upload-logs', async (req, res) => {
+  try {
+    const { jobId, logsText } = req.body || {};
+    if (!jobId || logsText === undefined) {
+      return res.status(400).json({ error: 'jobId and logsText are required' });
+    }
+    const { uploadLogsToR2 } = await import('./src/utils/r2Storage.js');
+    const url = await uploadLogsToR2(String(jobId), String(logsText));
+    return res.json({ success: true, url });
+  } catch (err: any) {
+    console.error('[API] /api/r2/upload-logs failed:', err);
+    return res.status(500).json({ error: err.message || 'Failed to upload logs' });
+  }
+});
+
+app.post('/api/r2/migrate-backend-logs', async (req, res) => {
+  try {
+    console.log('[MigrateLogs] Starting migration of backend logs from Supabase & Firestore to R2...');
+    const { uploadLogsToR2 } = await import('./src/utils/r2Storage.js');
+    const { supabaseAdmin } = await import('./supabaseAdmin.js');
+
+    let supabaseInspected = 0;
+    let supabaseMigrated = 0;
+    let totalBytesSaved = 0;
+
+    // 1. Migrate Supabase agent_jobs table
+    const { data: jobs, error: sbErr } = await supabaseAdmin
+      .from('agent_jobs')
+      .select('id, clean_result, status_message');
+
+    if (sbErr) {
+      console.error('[MigrateLogs] Supabase query failed:', sbErr.message);
+    } else if (jobs && jobs.length > 0) {
+      supabaseInspected = jobs.length;
+      for (const job of jobs) {
+        let cleanRes = job.clean_result;
+        if (!cleanRes || typeof cleanRes !== 'object') continue;
+
+        const rawLogs = cleanRes.backendLogs || cleanRes.agentResult?.backendLogs || '';
+        // Skip if already offloaded or empty
+        if (!rawLogs || typeof rawLogs !== 'string' || rawLogs.startsWith('[Logs stored in R2') || rawLogs.startsWith('http')) {
+          continue;
+        }
+
+        const logLength = rawLogs.length;
+        if (logLength < 10) continue;
+
+        // Upload raw logs to Cloudflare R2
+        const logsUrl = await uploadLogsToR2(job.id, rawLogs);
+        if (!logsUrl) {
+          console.warn(`[MigrateLogs] Failed to upload logs to R2 for job ${job.id}`);
+          continue;
+        }
+
+        // Clean payload
+        const updatedCleanRes = { ...cleanRes };
+        updatedCleanRes.backendLogsUrl = logsUrl;
+        updatedCleanRes.backendLogs = `[Logs stored in R2: ${logsUrl}]`;
+        if (updatedCleanRes.agentResult) {
+          updatedCleanRes.agentResult = {
+            ...updatedCleanRes.agentResult,
+            backendLogsUrl: logsUrl,
+            backendLogs: `[Logs stored in R2: ${logsUrl}]`,
+          };
+        }
+
+        const { error: updateErr } = await supabaseAdmin
+          .from('agent_jobs')
+          .update({ clean_result: updatedCleanRes })
+          .eq('id', job.id);
+
+        if (!updateErr) {
+          supabaseMigrated++;
+          totalBytesSaved += logLength;
+        } else {
+          console.error(`[MigrateLogs] Failed updating job ${job.id} in Supabase:`, updateErr.message);
+        }
+      }
+    }
+
+    // 2. Migrate Firestore agent logs if Firebase is configured
+    let firestoreInspected = 0;
+    let firestoreMigrated = 0;
+    try {
+      const { initializeApp: initializeClientApp } = await import('firebase/app');
+      const { initializeFirestore: initializeClientFirestore, collectionGroup, getDocs, updateDoc } = await import('firebase/firestore');
+
+      if (firebaseConfig && firebaseConfig.apiKey) {
+        const clientApp = initializeClientApp(firebaseConfig);
+        const clientDb = firebaseConfig.firestoreDatabaseId
+          ? initializeClientFirestore(clientApp, {}, firebaseConfig.firestoreDatabaseId)
+          : initializeClientFirestore(clientApp, {});
+
+        // Inspect foodImages or agentAnalyses collections
+        const snapshot = await getDocs(collectionGroup(clientDb, 'agentAnalyses'));
+        firestoreInspected = snapshot.size;
+
+        for (const docSnap of snapshot.docs) {
+          const data = docSnap.data();
+          const rawLogs = data.backendLogs || data.globalLiveLogs || data.agentResult?.backendLogs || '';
+          if (!rawLogs || typeof rawLogs !== 'string' || rawLogs.startsWith('[Logs stored in R2') || rawLogs.startsWith('http')) {
+            continue;
+          }
+
+          const logsUrl = await uploadLogsToR2(docSnap.id, rawLogs);
+          if (logsUrl) {
+            await updateDoc(docSnap.ref, {
+              backendLogsUrl: logsUrl,
+              backendLogs: `[Logs stored in R2: ${logsUrl}]`,
+              globalLiveLogs: `[Logs stored in R2: ${logsUrl}]`
+            });
+            firestoreMigrated++;
+            totalBytesSaved += rawLogs.length;
+          }
+        }
+      }
+    } catch (fsErr: any) {
+      console.warn('[MigrateLogs] Firestore log migration skipped/failed:', fsErr.message || fsErr);
+    }
+
+    return res.json({
+      success: true,
+      message: 'Backend logs migration completed',
+      stats: {
+        supabaseInspected,
+        supabaseMigrated,
+        firestoreInspected,
+        firestoreMigrated,
+        totalBytesSavedKB: Math.round(totalBytesSaved / 1024)
+      }
+    });
+  } catch (err: any) {
+    console.error('[MigrateLogs] Migration endpoint failed:', err);
+    return res.status(500).json({ error: 'Migration failed', details: err?.message || String(err) });
+  }
+});
+
 /** Stream meal photo from R2 (works when bucket is private). B11d. */
 async function streamR2Photo(res: any, rawKey: string) {
   const { GetObjectCommand } = await import('@aws-sdk/client-s3');
@@ -2052,6 +2265,44 @@ app.get('/api/r2/photo-url', async (req, res) => {
     });
   } catch (err: any) {
     res.status(500).json({ error: err?.message || 'photo-url failed' });
+  }
+});
+
+app.get('/api/r2/log-proxy', async (req, res) => {
+  try {
+    const rawUrl = String(req.query.url || '');
+    const jobId = String(req.query.jobId || '');
+    const { fetchLogsFromR2 } = await import('./src/utils/r2Storage.js');
+
+    let targetJobId = jobId;
+    if (!targetJobId && rawUrl) {
+      const match = rawUrl.match(/\/logs\/([^/?#]+)\.log/i) || rawUrl.match(/job_\d+_[a-z0-9]+/i);
+      if (match) {
+        targetJobId = match[1] || match[0];
+      }
+    }
+
+    if (targetJobId) {
+      const logs = await fetchLogsFromR2(targetJobId);
+      if (logs) {
+        res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+        return res.send(logs);
+      }
+    }
+
+    if (rawUrl && /^https?:\/\//i.test(rawUrl)) {
+      const r2Res = await fetch(rawUrl);
+      if (r2Res.ok) {
+        const text = await r2Res.text();
+        res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+        return res.send(text);
+      }
+    }
+
+    return res.status(404).send('Log file not found');
+  } catch (err: any) {
+    console.error('[API] /api/r2/log-proxy error:', err);
+    return res.status(500).send(err?.message || 'Failed to fetch R2 log');
   }
 });
 
@@ -2344,16 +2595,25 @@ async function callUnifiedLLM(args: any): Promise<any> {
     }
 
     if (isTimeoutOrDeadline) {
-      console.warn(`[UnifiedLLM] Primary request timed out or deadline exceeded (${err.message}). Retrying once with 'skipThinking: true' and 'gemini-3.5-flash-lite' to guarantee speed...`);
+      const is503 = errStr.includes('503') || errStr.includes('unavailable');
+      const delayMs = is503 ? 2000 : 0;
+      
+      console.warn(`[UnifiedLLM] Request failed (${err.message}). Retrying once with 'skipThinking: true'...`);
+      
+      if (delayMs > 0) {
+        await new Promise(resolve => setTimeout(resolve, delayMs));
+      }
+      
       try {
         const retryArgs = { 
           ...args, 
-          skipThinking: true, 
-          modelId: "gemini-3.5-flash-lite" 
+          skipThinking: true,
+          // keep the original model for 503s instead of forcing a downgrade that might also 503
+          modelId: args.modelId 
         };
         return await executeWithTimeout(retryArgs);
       } catch (retryErr: any) {
-        console.error(`[UnifiedLLM] Fast fallback retry also failed:`, retryErr);
+        console.error(`[UnifiedLLM] Fallback retry also failed:`, retryErr);
         throw retryErr;
       }
     }
@@ -3926,6 +4186,46 @@ app.post('/api/admin/food-catalog/quarantine-check', async (req, res) => {
   res.json(result);
 });
 
+app.post('/api/admin/db-clean', async (req, res) => {
+  try {
+    const { supabaseAdmin } = await import('./supabaseAdmin.js');
+    const countryCode = req.body?.countryCode || 'GB';
+    const cleanRes = await selfCleanBrandDatabase(supabaseAdmin, countryCode, console.log);
+    return res.json({
+      success: true,
+      chainStats: {
+        updatedChainsCount: cleanRes.updatedChainsCount,
+        deletedDuplicatesCount: cleanRes.deletedDuplicatesCount,
+        purgedUnofficialCount: cleanRes.removedUnofficialCount,
+        details: cleanRes.details
+      },
+      catalogStats: {
+        purgedBrandedCount: cleanRes.removedUnofficialCount
+      }
+    });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err?.message || String(err) });
+  }
+});
+
+app.post('/api/admin/brand-menu/cleanup', async (req, res) => {
+  try {
+    const { supabaseAdmin } = await import('./supabaseAdmin.js');
+    const countryCode = req.body?.countryCode || 'GB';
+    const cleanRes = await selfCleanBrandDatabase(supabaseAdmin, countryCode, console.log);
+    return res.json({
+      success: true,
+      countryCode,
+      deletedDuplicatesCount: cleanRes.deletedDuplicatesCount,
+      removedUnofficialCount: cleanRes.removedUnofficialCount,
+      updatedChainsCount: cleanRes.updatedChainsCount,
+      details: cleanRes.details
+    });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err?.message || String(err) });
+  }
+});
+
 app.get('/api/admin/food-catalog/metrics', async (req, res) => {
   try {
     const status = await getCatalogSyncStatus();
@@ -5011,7 +5311,20 @@ app.post("/api/gemini/food-analyze", async (req, res) => {
       });
     }
 
-    const uniqueQueries = Array.from(new Set(queriesToSearch));
+    const sanitizedRawQueries = queriesToSearch
+      .map(q => sanitizeDishTitle(String(q || '')))
+      .filter(q => q.length > 0);
+
+    const queryKeyMap = new Map<string, string>();
+    for (const q of sanitizedRawQueries) {
+      const key = normalizeFoodKey(q);
+      if (!key) continue;
+      if (!queryKeyMap.has(key) || q.length < queryKeyMap.get(key)!.length) {
+        queryKeyMap.set(key, q);
+      }
+    }
+
+    const uniqueQueries = Array.from(queryKeyMap.values());
 
     const chainPatterns: [string, RegExp][] = [
       ['sainsbury', /\bsainsbury\b/i],
@@ -5387,9 +5700,13 @@ app.post("/api/gemini/food-analyze", async (req, res) => {
           }
         });
 
-        if (candidates.length > 0) {
+        const cleanGapQuery = sanitizeDishTitle(resItem.query);
+        const gapKey = normalizeFoodKey(cleanGapQuery);
+        const isDuplicateGap = gapsForResolver.some(g => normalizeFoodKey(sanitizeDishTitle(g.query)) === gapKey);
+
+        if (!isDuplicateGap && candidates.length > 0 && cleanGapQuery) {
           gapsForResolver.push({
-            query: resItem.query,
+            query: cleanGapQuery,
             candidates
           });
         }
@@ -5469,6 +5786,19 @@ app.post("/api/gemini/food-analyze", async (req, res) => {
             addDebugLog(`[Food Resolver Integration] Injected resolved nutrients for "${rg.query}" into databaseMatchesArray: ${JSON.stringify(rg.nutrientsPer100g)}`);
           }
         });
+
+        // Trigger self-cleaning pass on brand database during Food Resolver review
+        try {
+          const { supabaseAdmin } = await import('./supabaseAdmin.js');
+          if (supabaseAdmin) {
+            const cleanResult = await selfCleanBrandDatabase(supabaseAdmin, 'GB', addDebugLog);
+            if (cleanResult.removedUnofficialCount > 0 || cleanResult.deletedDuplicatesCount > 0) {
+              sendLog('status', 'food_resolver', `Self-healing database pass: Purged ${cleanResult.removedUnofficialCount} non-branded/unofficial item(s) and ${cleanResult.deletedDuplicatesCount} duplicate(s).`);
+            }
+          }
+        } catch (cleanErr: any) {
+          addDebugLog(`[Food Resolver Self-Clean] Background cleaning notice: ${cleanErr?.message || cleanErr}`);
+        }
 
         // Record deferred gaps & category fallbacks for queries that couldn't be resolved from candidates
         const resolvedQuerySet = new Set(resolvedGaps.filter(rg => rg.nutrientsPer100g).map(rg => normalizeFoodKey(rg.query)));
@@ -6143,15 +6473,19 @@ function parseServingSizeGrams(ssVal: string, totalItemWeight: number): number {
         webMatchRaw = databaseMatchesArray.find(isFuzzyMatch);
       }
 
-      // Prevent single-ingredient brand matches from overriding multi-component home-cooked dishes
+      // Prevent single-ingredient brand matches from overriding multi-component home-cooked or composite dishes
       const isMultiComponentHomeCooked = item.components && item.components.length > 1 && diningEnvironment === 'home_cooked';
       const isBrandMatch = webMatchRaw && (webMatchRaw.source === 'brand_official' || webMatchRaw.brandPriority);
 
       const isMultiComponentItem = Array.isArray(item.components) && item.components.length >= 2;
-      if (!truthMatch && webMatchRaw && (!isMultiComponentHomeCooked || isBrandMatch)) {
+      const isCompositeOrUnofficial = isUnofficialOrCompositeDish(item.originalName || item.keyword, item.chainName || detectedChainKey).isUnofficial;
+
+      if (!truthMatch && webMatchRaw) {
         const src = webMatchRaw.source === 'brand_official' || webMatchRaw.brandPriority ? 'brand_official' : 'web_search';
-        if (isMultiComponentItem && src === 'web_search') {
-          addDebugLog(`[TruthSkip] multi-component "${item.originalName || item.keyword}": ignoring web_search as dish truth (use components + scout budget)`);
+        if (isMultiComponentItem && (src === 'web_search' || isCompositeOrUnofficial || isMultiComponentHomeCooked)) {
+          addDebugLog(`[TruthSkip] multi-component / composite dish "${item.originalName || item.keyword}": ignoring single-dish match "${webMatchRaw.dish_name || webMatchRaw.name}" as parent dish truth (use component decomposition + scout budget)`);
+        } else if (isMultiComponentHomeCooked && !isBrandMatch) {
+          addDebugLog(`[TruthSkip] home-cooked multi-component "${item.originalName || item.keyword}": ignoring non-brand match (use components + scout budget)`);
         } else {
           truthMatch = {
             ...webMatchRaw,
@@ -8516,7 +8850,7 @@ Current User Input: "${message}"`) + modeDPromptSuffix;
             if (match) {
               usedIndices.add(match.scoutIndex);
               const preCalc = preCalculatedItems.find((p: any) => p.scoutIndex === match.scoutIndex);
-              if (preCalc && preCalc.bestMatchDbId) {
+              if (preCalc) {
                 return {
                   ...item,
                   scoutIndex: item.scoutIndex !== undefined ? item.scoutIndex : match.scoutIndex,
@@ -8528,8 +8862,8 @@ Current User Input: "${message}"`) + modeDPromptSuffix;
                   visualIngredients: item.visualIngredients || match.visualIngredients || null,
                   cookingMethod: (match.cookingMethod && match.cookingMethod !== 'unknown') ? match.cookingMethod : (item.cookingMethod || null),
                   components: item.components || match.components || null,
-                  dbId: preCalc.bestMatchDbId,
-                  dbSource: preCalc.bestMatchDbSource,
+                  dbId: preCalc.bestMatchDbId || item.dbId || null,
+                  dbSource: preCalc.bestMatchDbSource || item.dbSource || 'estimated',
                   hasComponents: Boolean(preCalc.hasComponents),
                   primaryBase100g: preCalc.primaryBase100g || null,
                   primaryBaseMatchName: preCalc.primaryBaseMatchName || null,
@@ -8539,20 +8873,7 @@ Current User Input: "${message}"`) + modeDPromptSuffix;
                   truthNutrients: preCalc.truthNutrients || {},
                   lockedNutrientKeys: preCalc.lockedNutrientKeys || [],
                   ingredientsList: preCalc.ingredientsList || item.ingredientsList || match.ingredientsList || null,
-                  labelNutrientsPerServing: preCalc.primaryBase100g || {
-                    servingSizeGrams: 100,
-                    calories: preCalc.nutrients?.calories || 0,
-                    protein: preCalc.nutrients?.protein || 0,
-                    totalFat: preCalc.nutrients?.totalFat || 0,
-                    saturatedFat: preCalc.nutrients?.saturatedFat || 0,
-                    transFat: preCalc.nutrients?.transFat || 0,
-                    carbohydrates: preCalc.nutrients?.carbohydrates || 0,
-                    addedSugar: preCalc.nutrients?.addedSugar || 0,
-                    sodium: preCalc.nutrients?.sodium || 0,
-                    potassium: preCalc.nutrients?.potassium || 0,
-                    totalFibre: preCalc.nutrients?.totalFibre || 0,
-                    solubleFibre: preCalc.nutrients?.solubleFibre || 0
-                  }
+                  labelNutrientsPerServing: preCalc.labelNutrientsPerServing || preCalc.primaryBase100g || item.labelNutrientsPerServing || null
                 };
               }
               return {
@@ -8694,8 +9015,9 @@ Current User Input: "${message}"`) + modeDPromptSuffix;
                 visualIngredients: item.visualIngredients || preMatch.visualIngredients || null,
                 cookingMethod: (preMatch.cookingMethod && preMatch.cookingMethod !== 'unknown') ? preMatch.cookingMethod : (item.cookingMethod || null),
                 components: item.components || preMatch.components || null,
-                labelNutrientsPerServing: preMatch.primaryBase100g || injectedLabel,
-                primaryBase100g: preMatch.primaryBase100g || injectedLabel,
+                syntheticBase100g: injectedLabel,
+                labelNutrientsPerServing: preMatch.labelNutrientsPerServing || preMatch.primaryBase100g || null,
+                primaryBase100g: preMatch.primaryBase100g || null,
                 primaryBaseMatchName: preMatch.primaryBaseMatchName,
                 primaryBaseWeightG: preMatch.primaryBaseWeightG || item.weightGrams,
                 hasComponents: Boolean(preMatch.hasComponents),
@@ -8704,8 +9026,8 @@ Current User Input: "${message}"`) + modeDPromptSuffix;
                 truthNutrients: preMatch.truthNutrients || {},
                 lockedNutrientKeys: preMatch.lockedNutrientKeys || [],
                 ingredientsList: preMatch.ingredientsList || item.ingredientsList || null,
-                dbSource: preMatch.dbSource || "estimated",
-                dbId: preMatch.dbId
+                dbSource: preMatch.bestMatchDbSource || item.dbSource || "estimated",
+                dbId: preMatch.bestMatchDbId || item.dbId || null
               };
             }
             return item;
@@ -9035,7 +9357,7 @@ Current User Input: "${message}"`) + modeDPromptSuffix;
           receiptTable += `| **${idx + 1}. ${dishTitle}**${badge}${pfIcon} - ${itemWeightG}g${visualBreakdownStr} | - | - | - | - |\n`;
 
           // Base Ingredient calculation
-          let raw100 = { ...(it.primaryBase100g || it.labelNutrientsPerServing || {}) };
+          let raw100 = { ...(it.syntheticBase100g || it.primaryBase100g || it.labelNutrientsPerServing || {}) };
           const dbMatchObj = databaseMatchesArray ? databaseMatchesArray.find((m: any) => String(m.id) === String(it.dbId)) : null;
           const isGenuineTruthSource = it.dbSource === 'label' || it.dbSource === 'brand_official';
           

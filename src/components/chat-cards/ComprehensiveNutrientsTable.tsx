@@ -106,10 +106,9 @@ export const ComprehensiveNutrientsTable: React.FC<{
           ) : (
             <>
               <span>Serving Size:</span>
-              <span className="text-slate-300 font-semibold">{displayBasis}</span>
-              {displayServing && (
-                <> · Serving: <span className="text-slate-300 font-semibold">{displayServing}</span></>
-              )}
+              <span className="text-slate-300 font-semibold">
+                {basisType === 'per_100g' ? '100g' : (basisType === 'total' ? 'Combined Meal Total' : `1 dish${displayServing ? ` (${displayServing})` : ''}`)}
+              </span>
               {onServingSizeChange && (
                 <button
                   type="button"

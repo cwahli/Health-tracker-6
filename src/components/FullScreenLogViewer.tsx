@@ -1,6 +1,6 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
-import { X, Copy, Send, Check, AlertTriangle, Search, ChevronDown, ChevronUp, Trash2 } from 'lucide-react';
+import { X, Copy, Send, Check, AlertTriangle, Search, ChevronDown, ChevronUp, Trash2, Download, Loader } from 'lucide-react';
 import { getAgentRequestLogs, deleteAgentRequestLog, AgentRequestLog } from '../utils/agentLogsTracker';
 import { translations } from '../utils/translations';
 
@@ -698,8 +698,123 @@ export default function FullScreenLogViewer({
   const [selectedAgent, setSelectedAgent] = useState<string>('all');
   
   const [requestLogs, setRequestLogs] = useState<AgentRequestLog[]>([]);
+  const [r2LogContent, setR2LogContent] = useState<string | null>(null);
+  const [isFetchingR2, setIsFetchingR2] = useState<boolean>(false);
   const isDiagnostic = title.includes('Diagnostic');
   const actualShowFilters = showFilters || isDiagnostic;
+
+  // Auto-detect Cloudflare R2 log URLs in logsText or sessionLogs
+  useEffect(() => {
+    if (!isOpen) return;
+    const combined = (logsText || '') + ' ' + (sessionLogs ? sessionLogs.join(' ') : '') + ' ' + (requestLogs ? requestLogs.flatMap(r => r.logs.map(l => l.message)).join(' ') : '');
+    const urlMatch = combined.match(/(https?:\/\/[^\s\]"]+\.r2\.dev\/logs\/[^\s\]"]+)/i) || combined.match(/\[Logs stored in R2:\s*(https?:\/\/[^\s\]]+)\]/i);
+    if (urlMatch) {
+      const url = urlMatch[1] || urlMatch[0];
+      if (url && !r2LogContent) {
+        setIsFetchingR2(true);
+        fetch(url)
+          .then(res => {
+            if (!res.ok) throw new Error(`R2 direct fetch HTTP ${res.status}`);
+            return res.text();
+          })
+          .then(text => {
+            if (text && text.trim().length > 0) {
+              setR2LogContent(text);
+            }
+          })
+          .catch(async (err) => {
+            console.warn('[FullScreenLogViewer] Direct R2 fetch failed, trying proxy:', err);
+            try {
+              const proxyRes = await fetch(`/api/r2/log-proxy?url=${encodeURIComponent(url)}`);
+              if (proxyRes.ok) {
+                const proxyText = await proxyRes.text();
+                if (proxyText && proxyText.trim().length > 0) {
+                  setR2LogContent(proxyText);
+                }
+              }
+            } catch (proxyErr) {
+              console.warn('[FullScreenLogViewer] Proxy R2 log fetch failed:', proxyErr);
+            }
+          })
+          .finally(() => setIsFetchingR2(false));
+      }
+    }
+  }, [isOpen, logsText, sessionLogs, requestLogs]);
+
+  const handleDownloadAllLog = async () => {
+    let fullText = r2LogContent;
+    if (!fullText) {
+      const combined = (logsText || '') + ' ' + (sessionLogs ? sessionLogs.join(' ') : '');
+      const urlMatch = combined.match(/(https?:\/\/[^\s\]"]+\.r2\.dev\/logs\/[^\s\]"]+)/i) || combined.match(/\[Logs stored in R2:\s*(https?:\/\/[^\s\]]+)\]/i);
+      if (urlMatch) {
+        const url = urlMatch[1] || urlMatch[0];
+        try {
+          setIsFetchingR2(true);
+          let res = await fetch(url);
+          if (!res.ok) {
+            res = await fetch(`/api/r2/log-proxy?url=${encodeURIComponent(url)}`);
+          }
+          if (res.ok) {
+            fullText = await res.text();
+            setR2LogContent(fullText);
+          }
+        } catch (e) {
+          console.warn('[FullScreenLogViewer] Download fetch failed:', e);
+        } finally {
+          setIsFetchingR2(false);
+        }
+      }
+    }
+
+    if (!fullText || fullText.startsWith('[Logs stored in R2')) {
+      if (chunks && chunks.length > 0) {
+        fullText = chunks.join('\n\n');
+      } else {
+        fullText = logsText || 'No logs recorded.';
+      }
+    }
+
+    if (typeof window !== 'undefined') {
+      const clientDiagnosticsSection = [
+        '',
+        '================================================================================',
+        'CLIENT DIAGNOSTICS & TELEMETRY SUMMARY',
+        '================================================================================',
+        `[Last User Action] ${window.__lastUserAction ? JSON.stringify(window.__lastUserAction) : 'None'}`,
+        '',
+        `[User Action Breadcrumbs (${window.__userActionBreadcrumbs?.length || 0})]`,
+        ...((window.__userActionBreadcrumbs && window.__userActionBreadcrumbs.length > 0)
+          ? window.__userActionBreadcrumbs.slice(-25).map(b => `  - ${b.timestamp?.slice(11, 19) || ''} | ${b.action} | ${b.target || ''} | ${JSON.stringify(b.details || '')}`)
+          : ['  _No user UI interaction breadcrumbs captured prior to download._']),
+        '',
+        `[Client Network Errors & Latency Warnings (${window.__clientNetworkErrors?.length || 0})]`,
+        ...((window.__clientNetworkErrors && window.__clientNetworkErrors.length > 0)
+          ? window.__clientNetworkErrors.slice(-20).map(n => `  - ${n}`)
+          : ['  _No client network errors or latency warnings recorded._']),
+        '',
+        `[Client Console Warnings/Errors (${window.__clientConsoleLogs?.length || 0})]`,
+        ...((window.__clientConsoleLogs && window.__clientConsoleLogs.length > 0)
+          ? window.__clientConsoleLogs.slice(-20).map(c => `  - ${c}`)
+          : ['  _No client console warnings or errors recorded._']),
+        '================================================================================',
+        ''
+      ].join('\n');
+
+      if (!fullText.includes('CLIENT DIAGNOSTICS & TELEMETRY SUMMARY')) {
+        fullText += '\n\n' + clientDiagnosticsSection;
+      }
+    }
+
+    const blob = new Blob([fullText], { type: 'text/plain;charset=utf-8' });
+    const blobUrl = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = blobUrl;
+    a.download = `agent-diagnostic-log-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.log`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(blobUrl);
+  };
 
   const copyToClipboard = async (text: string): Promise<boolean> => {
     try {
@@ -745,6 +860,11 @@ export default function FullScreenLogViewer({
   }, [isOpen, isDiagnostic]);
 
   const chunks = useMemo(() => {
+    if (r2LogContent) {
+      const lines = r2LogContent.split(/\n(?=\[)/).filter(Boolean);
+      if (lines.length > 0) return lines;
+      return [r2LogContent];
+    }
     if (isDiagnostic) {
       if (selectedResponse === 'all') {
          const allHistorical = requestLogs.flatMap(r => r.logs.map(l => l.message));
@@ -759,7 +879,7 @@ export default function FullScreenLogViewer({
       return [];
     }
     return sessionLogs;
-  }, [sessionLogs, isDiagnostic, requestLogs, selectedResponse]);
+  }, [sessionLogs, isDiagnostic, requestLogs, selectedResponse, r2LogContent]);
 
   const agentLogs = useMemo(() => {
     const logsMap: Record<string, string[]> = {};
@@ -1633,6 +1753,24 @@ export default function FullScreenLogViewer({
         </div>
 
         <div className="flex items-center gap-2">
+          <button
+            onClick={handleDownloadAllLog}
+            disabled={isFetchingR2}
+            className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 border border-indigo-500 text-white rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
+            title="Download full execution log from Cloudflare R2 or session"
+          >
+            {isFetchingR2 ? (
+              <>
+                <Loader className="w-4 h-4 animate-spin text-white" />
+                <span>Fetching R2...</span>
+              </>
+            ) : (
+              <>
+                <Download className="w-4 h-4" />
+                <span>Download All Log</span>
+              </>
+            )}
+          </button>
           {onClearLogs && (
             <button
               onClick={handleClear}

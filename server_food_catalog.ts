@@ -260,10 +260,32 @@ export async function upsertFoodItemCandidate(item: {
     const normKey = normalizeFoodKey(item.food_key);
     const displayName = item.display_name || '';
 
-    // Guard 1: Do not insert branded items into unbranded food_catalog (food_items)
+    // Guard 1: Do not insert branded items into unbranded food_catalog (food_items); redirect to brand_menu_items
     if (isKnownDatabaseBrandSync(displayName) || isKnownDatabaseBrandSync(normKey) || isGroceryBrandSync(displayName)) {
-      console.log(`[FoodCatalog] Skipped inserting branded item "${displayName}" into unbranded food_catalog.`);
-      return { success: false, error: 'Branded item belongs in brand_menu_items, not unbranded food catalog' };
+      console.log(`[FoodCatalog] Redirecting branded candidate "${displayName}" to brand_menu_items...`);
+      try {
+        const { autoRegisterChainMenuItem, normalizeChainKey } = await import('./serverBrandMenu.js');
+        const chainKey = normalizeChainKey(displayName) || normalizeChainKey(normKey) || 'sainsbury';
+        const { supabaseAdmin } = await import('./supabaseAdmin.js');
+        if (supabaseAdmin) {
+          await autoRegisterChainMenuItem(
+            supabaseAdmin,
+            {
+              chainName: chainKey,
+              dishName: displayName,
+              originalName: displayName,
+              rawNutritionLabel: item.nutrients_per_100g || {},
+              lockedNutrientKeys: Object.keys(item.nutrients_per_100g || {}),
+              estimatedWeightGrams: 100
+            },
+            'GB',
+            (msg: string) => console.log(msg)
+          );
+        }
+      } catch (brandErr) {
+        console.warn(`[FoodCatalog] Failed auto-registering branded item "${displayName}":`, brandErr);
+      }
+      return { success: true };
     }
 
     // Guard 2: Reject candidate items with zero calories and zero macros

@@ -39,6 +39,7 @@ import { JobStore } from '../jobs/JobStore';
 import { ImageStore } from '../jobs/ImageStore';
 import { reserveCredits } from '../jobs/credits';
 import { JobQueueRunner } from '../jobs/JobQueueRunner';
+import { recordBreadcrumb } from '../utils/breadcrumbTracker';
 
 import { PRIMARY_NUTRIENTS, formatNutrientDisplayValue } from '../utils/nutrients';
 import { AgentType, AGENT_REGISTRY, getAgentRolloutStatus } from '../utils/agentConfig';
@@ -1609,16 +1610,13 @@ ${logsText}`);
 
         const lastMsg = baseMsgs[baseMsgs.length - 1];
         if (job.status === 'awaiting_user') {
+          const rawResult = job.result?.clean_result || job.result || (job as any).clean_result || {};
           const portionClarify =
-            job.result?.portionClarify ||
-            job.result?.clean_result?.portionClarify ||
-            (job.result as any)?.data?.portionClarify ||
-            (job as any).clean_result?.portionClarify;
+            rawResult.portionClarify ||
+            (job.result as any)?.data?.portionClarify;
           const promptMsg = portionClarify?.promptMessage || job.statusMessage || 'Please confirm portion size';
           const scoutItems =
-            job.result?.scoutItems ||
-            job.result?.clean_result?.scoutItems ||
-            (job as any).clean_result?.scoutItems ||
+            rawResult.scoutItems ||
             [];
           let assistantClarifyMsg = baseMsgs.find((m: any) => m.role === 'assistant' && (m.data?.portionClarify || m.data?.needsPortionClarify));
           if (!assistantClarifyMsg) {
@@ -1633,11 +1631,13 @@ ${logsText}`);
                 needsPortionClarify: true,
                 portionClarify,
                 scoutItems,
-                photoUrl: job.photoUrl || job.result?.photoUrl || (job.result as any)?.clean_result?.photoUrl,
-                debugUrl: job.debugUrl || job.result?.debugUrl || (job.result as any)?.clean_result?.debugUrl,
+                photoUrl: job.photoUrl || rawResult.photoUrl,
+                debugUrl: job.debugUrl || rawResult.debugUrl,
                 agentResult: {
                   scoutItems,
-                  activeStage: 'portion_clarify'
+                  activeStage: 'portion_clarify',
+                  scoutScratchpad: rawResult.agentResult?.scoutScratchpad || rawResult.scoutScratchpad || job.liveThoughts?.scout || '',
+                  backendLogs: rawResult.agentResult?.backendLogs || rawResult.backendLogs || job.liveThoughts?.backendLogs || ''
                 }
               }
             };
@@ -1745,11 +1745,11 @@ ${logsText}`);
               comparison: raw.comparison,
               agentResult: {
                 ...(raw.agentResult || {}),
-                scoutScratchpad: raw.agentResult?.scoutScratchpad || job.liveThoughts?.scout || '',
-                dietitianScratchpad: raw.agentResult?.dietitianScratchpad || job.liveThoughts?.dietitian || '',
-                backendLogs: raw.agentResult?.backendLogs || job.liveThoughts?.backendLogs || '',
-                globalLiveLogs: job.liveThoughts?.globalLiveLogs || '',
-                dbSearchLog: raw.agentResult?.dbSearchLog || job.liveThoughts?.dbSearchLog || ''
+                scoutScratchpad: raw.agentResult?.scoutScratchpad || raw.scoutScratchpad || job.liveThoughts?.scout || '',
+                dietitianScratchpad: raw.agentResult?.dietitianScratchpad || raw.dietitianScratchpad || job.liveThoughts?.dietitian || '',
+                backendLogs: raw.agentResult?.backendLogs || raw.backendLogs || job.liveThoughts?.backendLogs || '',
+                globalLiveLogs: raw.agentResult?.globalLiveLogs || raw.globalLiveLogs || job.liveThoughts?.globalLiveLogs || '',
+                dbSearchLog: raw.agentResult?.dbSearchLog || raw.dbSearchLog || job.liveThoughts?.dbSearchLog || ''
               }
             }
           };
@@ -1762,16 +1762,13 @@ ${logsText}`);
           }
           setMessages([welcome, userMsg, assistantMsg], false);
         } else if (job.status === 'awaiting_user') {
+          const rawResult = job.result?.clean_result || job.result || (job as any).clean_result || {};
           const portionClarify =
-            job.result?.portionClarify ||
-            job.result?.clean_result?.portionClarify ||
-            (job.result as any)?.data?.portionClarify ||
-            (job as any).clean_result?.portionClarify;
+            rawResult.portionClarify ||
+            (job.result as any)?.data?.portionClarify;
           const promptMsg = portionClarify?.promptMessage || job.statusMessage || 'Please confirm portion size';
           const scoutItems =
-            job.result?.scoutItems ||
-            job.result?.clean_result?.scoutItems ||
-            (job as any).clean_result?.scoutItems ||
+            rawResult.scoutItems ||
             [];
           const assistantClarifyMsg: ChatMessage = {
             id: `msg_assistant_clarify_${jobId}`,
@@ -1784,11 +1781,13 @@ ${logsText}`);
               needsPortionClarify: true,
               portionClarify,
               scoutItems,
-              photoUrl: job.photoUrl || job.result?.photoUrl || (job.result as any)?.clean_result?.photoUrl,
-              debugUrl: job.debugUrl || job.result?.debugUrl || (job.result as any)?.clean_result?.debugUrl,
+              photoUrl: job.photoUrl || rawResult.photoUrl,
+              debugUrl: job.debugUrl || rawResult.debugUrl,
               agentResult: {
                 scoutItems,
-                activeStage: 'portion_clarify'
+                activeStage: 'portion_clarify',
+                scoutScratchpad: rawResult.agentResult?.scoutScratchpad || rawResult.scoutScratchpad || job.liveThoughts?.scout || '',
+                backendLogs: rawResult.agentResult?.backendLogs || rawResult.backendLogs || job.liveThoughts?.backendLogs || ''
               }
             }
           };
@@ -1847,12 +1846,21 @@ ${logsText}`);
     };
   }, [jobId, isOpen, type]);
 
-  const handleDownloadDebug = async (jobIdToDownload: string, msg: any) => {
+  const handleDownloadDebug = async (jobIdToDownload: string, msg: any, format: 'json' | 'markdown' = 'markdown') => {
     const job = JobStore.getJob(jobIdToDownload);
+    const clientConsoleLogs = window.__clientConsoleLogs || [];
+    const networkErrors = window.__clientNetworkErrors || [];
+    const lastUserAction = window.__lastUserAction || (inputText ? { action: 'chat_submit', prompt: inputText, timestamp: new Date().toISOString() } : undefined);
+
     const localPayload = {
       jobId: jobIdToDownload,
       status: job?.status,
-      result: job?.result,
+      result: {
+        ...(job?.result || {}),
+        lastUserAction,
+        clientConsoleLogs,
+        networkErrors,
+      },
       messages: job?.messages,
       liveThoughts: job?.liveThoughts,
       backendLogs:
@@ -1868,13 +1876,14 @@ ${logsText}`);
     // 1) Try server proxy (auth-friendly)
     try {
       const uid = auth.currentUser?.uid || 'anonymous';
-      const res = await fetch(`/api/jobs/debug?jobId=${encodeURIComponent(jobIdToDownload)}&userId=${encodeURIComponent(uid)}`);
+      const fmtParam = format === 'markdown' ? '&format=markdown' : '';
+      const res = await fetch(`/api/jobs/debug?jobId=${encodeURIComponent(jobIdToDownload)}&userId=${encodeURIComponent(uid)}${fmtParam}`);
       if (res.ok) {
         const blob = await res.blob();
         const url = window.URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
-        a.download = `debug-${jobIdToDownload}.json`;
+        a.download = `debug-${jobIdToDownload}.${format === 'markdown' ? 'md' : 'json'}`;
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);
@@ -1885,17 +1894,47 @@ ${logsText}`);
       console.warn('Proxy download failed, trying local fallback:', e);
     }
 
-    // 2) Try debugUrl only if same-origin or clearly public; on 401 fall through
-    // 3) Always available: download localPayload as JSON file
-    const blob = new Blob([JSON.stringify(localPayload, null, 2)], { type: 'application/json' });
-    const url = window.URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `debug-${jobIdToDownload}.json`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    window.URL.revokeObjectURL(url);
+    // 2) Local fallback using buildDebugMarkdownReport or JSON
+    if (format === 'markdown') {
+      const { buildDebugMarkdownReport } = await import('../utils/debugPayload');
+      const mdContent = buildDebugMarkdownReport({
+        jobId: jobIdToDownload,
+        status: job?.status,
+        mode: job?.result?.mode,
+        message: job?.result?.message || msg?.content,
+        backendLogs: localPayload.backendLogs,
+        pendingFoodLog: job?.result?.pendingFoodLog || job?.result,
+        scoutItems: job?.result?.scoutItems,
+        receiptTable: job?.result?.receiptTable || job?.result?.pendingFoodLog?.receiptTable,
+        error: job?.error?.message,
+        lastUserAction: lastUserAction || job?.result?.lastUserAction || (typeof window !== 'undefined' ? window.__lastUserAction : undefined),
+        userActionBreadcrumbs: (typeof window !== 'undefined' ? window.__userActionBreadcrumbs : undefined) || job?.result?.userActionBreadcrumbs || [],
+        clientConsoleLogs: clientConsoleLogs || job?.result?.clientConsoleLogs || (typeof window !== 'undefined' ? window.__clientConsoleLogs : undefined) || [],
+        networkErrors: networkErrors || job?.result?.networkErrors || (typeof window !== 'undefined' ? window.__clientNetworkErrors : undefined) || [],
+        usdaSearchResults: job?.result?.usdaSearchResults,
+        brandSearchResults: job?.result?.brandSearchResults,
+        comprehensiveNutrients: job?.result?.comprehensiveNutrients || job?.result?.pendingFoodLog?.nutrients
+      });
+      const blob = new Blob([mdContent], { type: 'text/markdown;charset=utf-8' });
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `debug-${jobIdToDownload}.md`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      window.URL.revokeObjectURL(url);
+    } else {
+      const blob = new Blob([JSON.stringify(localPayload, null, 2)], { type: 'application/json' });
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `debug-${jobIdToDownload}.json`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      window.URL.revokeObjectURL(url);
+    }
   };
 
   const [globalLiveLogs, setGlobalLiveLogs] = useState<string>('');
@@ -2668,6 +2707,13 @@ ${logsText}`);
         }
 
         getImagesAsBase64(finalImages).then((stagedImagesForSubmit) => {
+          recordBreadcrumb('submit_meal_job', 'chat_compose_dock', {
+            jobId: currentJobId,
+            promptLength: textToSend?.length,
+            imageCount: stagedImagesForSubmit.length,
+            submissionMode
+          });
+
           fetch('/api/jobs/submit', {
             method: 'POST',
             headers: {
@@ -2675,6 +2721,7 @@ ${logsText}`);
             },
             body: safeJSONStringify({
               jobId: currentJobId,
+              idempotencyKey: `idemp_${auth.currentUser?.uid || 'anon'}_${currentJobId}`,
               userId: auth.currentUser?.uid || 'anonymous',
               kind: family === 'D' ? 'food_compare' : 'food_log',
               mode: submissionMode,
@@ -2690,7 +2737,11 @@ ${logsText}`);
               userSelectedMode: submissionMode,
               activeScoutItems: scoutItemsForJob,
               portionChoices: extraOptions?.portionChoices,
-              skipScout: extraOptions?.skipScout || !!extraOptions?.portionChoices
+              skipScout: extraOptions?.skipScout || !!extraOptions?.portionChoices,
+              clientConsoleLogs: window.__clientConsoleLogs || [],
+              networkErrors: window.__clientNetworkErrors || [],
+              userActionBreadcrumbs: window.__userActionBreadcrumbs || [],
+              lastUserAction: window.__lastUserAction || { action: 'chat_submit', prompt: textToSend, timestamp: new Date().toISOString() }
             })
           })
           .then(async (res) => {

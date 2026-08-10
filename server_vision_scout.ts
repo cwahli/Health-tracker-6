@@ -392,6 +392,19 @@ export function resolvePackageAndContextItems(
             const words = nameStr.split(/[^a-z0-9]+/);
             const hasWordMatch = words.some(w => w.length >= 3 && contextStr.includes(w));
             if (hasWordMatch || items.length === 1) {
+              if (item.components && Array.isArray(item.components) && item.components.length > 1) {
+                const matchedComp = item.components.find((c: any) => {
+                  const cQuery = (c.searchQuery || c.name || c.keyword || '').toLowerCase();
+                  return cQuery.split(/[^a-z0-9]+/).some((w: string) => w.length >= 3 && contextStr.includes(w));
+                });
+                if (matchedComp && Number(matchedComp.volumePercentage) > 0) {
+                  const compPct = Number(matchedComp.volumePercentage) / 100;
+                  const targetTotalWeight = Math.round(explicitWeight / compPct);
+                  addDebugLog(`[User Explicit Weight Anchor] User text specified ${explicitWeight}g for sub-component "${matchedComp.searchQuery || matchedComp.name}" in composite dish "${item.originalName || item.keyword}". Updating total dish estimatedWeightGrams from ${item.estimatedWeightGrams}g to ${targetTotalWeight}g (component=${explicitWeight}g).`);
+                  item.estimatedWeightGrams = targetTotalWeight;
+                  break;
+                }
+              }
               addDebugLog(`[User Explicit Weight Anchor] User text specified ${explicitWeight}g for "${item.originalName || item.keyword}". Updating estimatedWeightGrams from ${item.estimatedWeightGrams}g to ${explicitWeight}g.`);
               item.estimatedWeightGrams = explicitWeight;
               break;
