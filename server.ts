@@ -5690,6 +5690,9 @@ app.post("/api/gemini/food-analyze", async (req, res) => {
         }
 
         const candidates: Array<{ id: string; name: string; source: string }> = [];
+        resItem.brandHits?.forEach((item: any) => {
+          candidates.push({ id: String(item.id), name: `${item.chainName || ''} ${item.name || item.dish_name || ''}`.trim(), source: "brand_official" });
+        });
         resItem.usda.forEach((food: any) => {
           candidates.push({ id: String(food.fdcId), name: food.description || "", source: "usda" });
         });
@@ -6051,7 +6054,8 @@ app.post("/api/gemini/food-analyze", async (req, res) => {
           // Component matching: never use whole-dish web_search rows as ingredient identity
           if (m.source === 'web_search' || m.source === 'tavily' || m.source === 'serper' || m.source === 'google_cse') return;
           
-          const dbTitle = String(m.name || '').toLowerCase().replace(/[^\w\s]/g, '');
+          const chainNamePrefix = m.chainName || m.chain_name || m.chain_key || '';
+          const dbTitle = `${chainNamePrefix} ${m.name || m.dish_name || ''}`.toLowerCase().replace(/[^\w\s]/g, '');
           const dbTokens = new Set<string>(dbTitle.split(/\s+/));
 
           // RULE 1: Core Token Lock
@@ -6080,7 +6084,7 @@ app.post("/api/gemini/food-analyze", async (req, res) => {
           const isQueryCooked = /\b(cooked|boiled|baked|fried|roasted|plated|steamed|grilled|poached|toast|toasted|canned|sauteed)\b/i.test(keyword);
           const isQueryDry = /\b(dry|raw|flour|powder|mix|unprepared|raw_ingredient)\b/i.test(keyword);
           const isCandDry = /\b(dry|raw|flour|powder|mix|unprepared|raw_ingredient)\b/i.test(dbTitle);
-          if (isQueryCooked && !isQueryDry && isCandDry && !dbTitle.includes('cooked')) return;
+          if (isQueryCooked && !isQueryDry && isCandDry && !dbTitle.includes('cooked') && m.source !== 'brand_official') return;
           if (isQueryDry && !isQueryCooked && /\b(cooked|boiled|baked|fried|roasted|plated|steamed|grilled|poached|toast|toasted|canned|sauteed)\b/i.test(dbTitle)) return;
 
           // RULE 2.6: Identity poison rejects (query vs candidate title)
@@ -7170,7 +7174,7 @@ function parseServingSizeGrams(ssVal: string, totalItemWeight: number): number {
               sodium: 0
             };
             databaseMatchesArray.push(bestMatch);
-          } else if (canonicalData) {
+          } else if ((!bestMatch || bestMatch.source === 'category_fallback' || bestMatch.source === 'estimated') && canonicalData) {
             const virtualId = `canonical_comp_${itemIndex}_${cIdx}`;
             dbMatchMap.set(virtualId, canonicalData);
             bestMatch = {
@@ -7260,7 +7264,9 @@ function parseServingSizeGrams(ssVal: string, totalItemWeight: number): number {
             searchQuery: query,
             weightGrams: compWeight,
             dbId: String(bestMatch.id),
-            dbSource: bestMatch.source
+            dbSource: bestMatch.source,
+            rawNutritionLabel: bestMatch.rawNutritionLabel,
+            isRealTruth: bestMatch.source === 'brand_official' || bestMatch.source === 'label'
           };
           NUTRIENT_KEYS.forEach(key => {
             if (baseNutrients[key] !== undefined && baseNutrients[key] !== null) {
@@ -9234,6 +9240,9 @@ Current User Input: "${message}"`) + modeDPromptSuffix;
 
             const enriched = {
               ...registerItem,
+              source: registerItem.source || scoutMatch?.source || null,
+              hasComponents: registerItem.hasComponents !== undefined ? registerItem.hasComponents : scoutMatch?.hasComponents,
+              components: registerItem.components || scoutMatch?.components || null,
               chainName: registerItem.chainName || scoutMatch?.chainName || null,
               originalName:
                 registerItem.originalName ||

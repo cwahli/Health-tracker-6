@@ -21,6 +21,8 @@ export interface ServerJobPayload {
   userSelectedMode?: string;
   activeScoutItems?: any[];
   portionChoices?: any;
+  skipScout?: boolean;
+  scoutContentType?: 'ambiguous' | 'branded_single' | 'whole_food' | 'recipe';
   clientConsoleLogs?: string[];
   networkErrors?: string[];
   userActionBreadcrumbs?: any[];
@@ -266,7 +268,9 @@ export async function submitServerJob(payload: ServerJobPayload): Promise<void> 
         foodLogs: payload.foodLogs || [],
         userSelectedMode: payload.userSelectedMode || mode || 'review',
         activeScoutItems: payload.activeScoutItems || [],
-        portionChoices: payload.portionChoices
+        portionChoices: payload.portionChoices,
+        skipScout: payload.skipScout,
+        scoutContentType: payload.scoutContentType
       };
 
       // Server background job worker invocation via loopback with AbortController timeout

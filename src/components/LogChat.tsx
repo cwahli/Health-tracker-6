@@ -2515,7 +2515,11 @@ ${logsText}`);
           text: userContent,
           imageRefs: [],
           hasImage: finalImages.length > 0,
-          mode: submissionMode
+          mode: submissionMode,
+          portionChoices: extraOptions?.portionChoices,
+          activeScoutItems: scoutItemsForJob,
+          skipScout: extraOptions?.skipScout,
+          scoutContentType: scoutContentTypeFallback
         };
 
         // Use a durable base64 data URL instead of a throwaway blob: URL, so the

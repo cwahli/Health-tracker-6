@@ -411,19 +411,54 @@ export async function autoRegisterChainMenuItem(
         // Soft-fail OK
       }
 
-      const { data: existingRows, error: lookupErr } = await supabaseAdmin
+      const { data: chainRows, error: lookupErr } = await supabaseAdmin
         .from('brand_menu_items')
-        .select('*')
+        .select('id, dish_name, dish_name_key, basis_type, serving_grams, nutrients')
         .eq('country_code', countryCode)
-        .eq('chain_key', chain_key)
-        .eq('dish_name_key', dish_name_key);
+        .eq('chain_key', chain_key);
 
       if (lookupErr) {
         addDebugLog(`[AutoChainRegister] lookup error, skipping: ${lookupErr.message}`);
         return;
       }
 
-      const existing = existingRows && existingRows.length > 0 ? existingRows[0] : null;
+      let existing = null;
+      let existingRows = [];
+      if (chainRows && chainRows.length > 0) {
+        // 1. Check for exact key match
+        existingRows = chainRows.filter((r: any) => r.dish_name_key === dish_name_key);
+        
+        if (existingRows.length === 0) {
+          // 2. Fuzzy dedup check
+          const normalizeTokens = (s: string) => s.toLowerCase().replace(/[^a-z0-9\s]/g, '').split(/\s+/).filter(t => t.length > 2);
+          const newTokens = normalizeTokens(dishName);
+          if (newTokens.length > 0) {
+            let bestFuzzyMatch = null;
+            let bestFuzzyScore = 0;
+            
+            for (const row of chainRows) {
+              const existingTokens = normalizeTokens(row.dish_name);
+              if (existingTokens.length === 0) continue;
+              const overlap = newTokens.filter(t => existingTokens.includes(t)).length;
+              const jaccard = overlap / (newTokens.length + existingTokens.length - overlap);
+              
+              if (jaccard > 0.65 || (overlap >= 2 && overlap === newTokens.length && existingTokens.length === newTokens.length + 1)) {
+                if (jaccard > bestFuzzyScore) {
+                  bestFuzzyScore = jaccard;
+                  bestFuzzyMatch = row;
+                }
+              }
+            }
+            
+            if (bestFuzzyMatch) {
+              addDebugLog(`[AutoChainRegister] Fuzzy matched new dish "${dishName}" to existing "${bestFuzzyMatch.dish_name}" (score: ${bestFuzzyScore.toFixed(2)})`);
+              existingRows = [bestFuzzyMatch];
+            }
+          }
+        }
+      }
+
+      existing = existingRows.length > 0 ? existingRows[0] : null;
 
       if (existingRows && existingRows.length > 1) {
         const extraIds = existingRows.slice(1).map((r: any) => r.id).filter(Boolean);
@@ -1267,11 +1302,44 @@ export function registerBrandMenuRoutes(app: Express) {
       const stillLocal: any[] = [];
       const sampleErrors: string[] = [];
 
+      const ALLOWED_BRAND_MENU_ITEM_COLUMNS = new Set([
+        'country_code',
+        'chain_key',
+        'dish_name',
+        'dish_name_key',
+        'serving_grams',
+        'basis_type',
+        'nutrients',
+        'nutrients_per_100g',
+        'ingredients',
+        'provenance',
+        'confidence',
+        'capture_count',
+        'source_url',
+        'notes',
+        'enabled',
+        'updated_at'
+      ]);
+
       for (const item of toSync) {
         try {
+          const payload: Record<string, any> = {};
+          for (const [key, val] of Object.entries(item)) {
+            if (ALLOWED_BRAND_MENU_ITEM_COLUMNS.has(key) && val !== undefined) {
+              payload[key] = val;
+            }
+          }
+          if (!payload.country_code) payload.country_code = country_code;
+          if (!payload.chain_key && item.chain_name) {
+            payload.chain_key = normalizeChainKey(item.chain_name);
+          }
+          if (!payload.dish_name_key && payload.dish_name) {
+            payload.dish_name_key = normalizeDishKey(payload.dish_name);
+          }
+
           const { error } = await supabaseAdmin
             .from('brand_menu_items')
-            .upsert(item, { onConflict: 'country_code,chain_key,dish_name_key' })
+            .upsert(payload, { onConflict: 'country_code,chain_key,dish_name_key' })
             .select('*')
             .single();
           if (error) throw error;
@@ -1965,8 +2033,38 @@ export async function fetchAllBrandMenuItems(): Promise<any[]> {
   return items;
 }
 
+const GENERIC_COMMODITY_FOODS = new Set([
+  'milk', 'cow milk', 'whole milk', 'skim milk', 'semi skimmed milk', 'semi-skimmed milk', 'fresh milk', 'fluid milk',
+  'water', 'tap water', 'spring water', 'mineral water',
+  'egg', 'eggs', 'boiled egg', 'poached egg', 'fried egg', 'scrambled egg', 'raw egg',
+  'apple', 'apples', 'banana', 'bananas', 'flat peach', 'peach', 'peaches', 'nectarine', 'nectarines',
+  'grape', 'grapes', 'red grapes', 'green grapes', 'white grapes', 'plum', 'plums', 'berry', 'berries',
+  'bread', 'toast', 'white bread', 'wholemeal bread', 'whole wheat bread',
+  'rice', 'white rice', 'brown rice', 'cooked rice', 'steamed rice',
+  'butter', 'unsalted butter', 'salted butter', 'margarine',
+  'oil', 'olive oil', 'vegetable oil', 'cooking oil', 'sunflower oil',
+  'salt', 'table salt', 'sea salt', 'black pepper', 'pepper', 'sugar', 'white sugar', 'brown sugar',
+  'chicken', 'chicken breast', 'salmon', 'beef', 'pork'
+]);
+
+export function isGenericCommodityFood(query: string): boolean {
+  if (!query) return false;
+  const qClean = query.toLowerCase().trim().replace(/[^a-z0-9\s]/g, '');
+  if (GENERIC_COMMODITY_FOODS.has(qClean)) return true;
+  const tokens = qClean.split(/\s+/).filter(Boolean);
+  if (tokens.length <= 2 && tokens.every(t => GENERIC_COMMODITY_FOODS.has(t))) {
+    return true;
+  }
+  return false;
+}
+
 export async function searchBrandMenuItems(query: string, explicitChainKey?: string): Promise<any[]> {
   if (!query || query.trim().length < 2) return [];
+
+  // Guard: generic commodity foods without explicit brand in query should never match branded menu items
+  if (isGenericCommodityFood(query) && !isKnownDatabaseBrandSync(query)) {
+    return [];
+  }
 
   const allItems = await fetchAllBrandMenuItems();
   if (!allItems || allItems.length === 0) return [];
@@ -1979,20 +2077,36 @@ export async function searchBrandMenuItems(query: string, explicitChainKey?: str
     'sub', 'roll', 'bar', 'shake', 'platter', 'box', 'meal'
   ]);
 
+  const normalizeWordToken = (w: string): string => {
+    let word = w.toLowerCase().trim().replace(/[^a-z0-9]/g, '');
+    if (word.endsWith('ies') && word.length > 4) {
+      word = word.slice(0, -3) + 'y';
+    } else if (word.endsWith('es') && word.length > 4) {
+      word = word.slice(0, -2);
+    } else if (word.endsWith('s') && !word.endsWith('ss') && word.length > 3) {
+      word = word.slice(0, -1);
+    }
+    return word;
+  };
+
   const scoreDishMatch = (queryKey: string, itemKey: string, chainKey?: string): number => {
     if (queryKey === itemKey) return 999;
     if (chainKey && queryKey === `${chainKey}_${itemKey}`) return 999;
-    if (chainKey && `${chainKey}_${itemKey}`.includes(queryKey)) return 500;
-    if (queryKey.includes(itemKey) && itemKey.length > 4) return 200;
+    if (chainKey && itemKey === `${chainKey}_${queryKey}`) return 999;
+    if (queryKey.includes(itemKey) && itemKey.length > 4) return 500;
 
-    const qWords = new Set(queryKey.split('_').filter(w => w.length > 2));
-    const iWords = new Set(itemKey.split('_').filter(w => w.length > 2));
+    const rawQWords = queryKey.split('_').filter(w => w.length >= 2);
+    const rawIWords = itemKey.split('_').filter(w => w.length >= 2);
+    if (chainKey) {
+      rawIWords.push(...chainKey.split('_'));
+    }
+
+    const qWords = new Set(rawQWords.map(normalizeWordToken).filter(w => w.length >= 2));
+    const iWords = new Set(rawIWords.map(normalizeWordToken).filter(w => w.length >= 2));
     if (qWords.size === 0 || iWords.size === 0) return 0;
 
     // Guard: reject candidates whose dish "form" word (side/sandwich/cup/bowl/bites/etc.)
-    // conflicts with the query's form word, even if other words overlap. Prevents e.g.
-    // "Chicken Side" scoring a match against "Chicken Sandwich" purely on shared brand +
-    // ingredient words.
+    // conflicts with the query's form word, even if other words overlap.
     const qForms = [...qWords].filter(w => DISH_FORM_WORDS.has(w));
     const iForms = [...iWords].filter(w => DISH_FORM_WORDS.has(w));
     if (qForms.length > 0 && iForms.length > 0 && !qForms.some(f => iForms.includes(f))) {
@@ -2000,13 +2114,20 @@ export async function searchBrandMenuItems(query: string, explicitChainKey?: str
     }
 
     let shared = 0;
-    qWords.forEach(w => { if (iWords.has(w)) shared++; });
-    const ratio = shared / Math.max(qWords.size, iWords.size);
+    qWords.forEach(qw => {
+      if (iWords.has(qw) || [...iWords].some(iw => (iw.length > 3 && qw.length > 3 && (iw.startsWith(qw) || qw.startsWith(iw))))) {
+        shared++;
+      }
+    });
+
+    const qCoverage = shared / qWords.size; // How much of the query is satisfied
+    const iCoverage = shared / iWords.size; // How specific the match is
+    let score = (qCoverage * 0.7) + (iCoverage * 0.3);
 
     if (chainKey && (qLower.includes(chainKey.replace(/_/g, ' ')) || qLower.includes(chainKey))) {
-      return ratio * 1.5;
+      score *= 1.3;
     }
-    return ratio;
+    return score;
   };
 
   const matches: Array<{ item: any; score: number }> = [];

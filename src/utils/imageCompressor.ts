@@ -10,116 +10,109 @@ export interface CompressionProgress {
   stage: 'loading' | 'compressing' | 'done';
 }
 
-export function compressImage(
-  base64OrFile: string | File,
+function fileOrBlobToDataURL(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result as string);
+    reader.onerror = () => reject(reader.error || new Error('FileReader failed'));
+    reader.readAsDataURL(blob);
+  });
+}
+
+function loadImage(src: string): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    // Allow cross-origin image loading if URL is remote
+    img.crossOrigin = 'anonymous';
+    img.onload = () => resolve(img);
+    img.onerror = (err) => reject(new Error('Failed to load image element: ' + (err instanceof Error ? err.message : 'Unknown error')));
+    img.src = src;
+  });
+}
+
+export async function compressImage(
+  base64OrFile: string | File | Blob,
   maxWidth = 400,
   maxHeight = 400,
   quality = 0.5
 ): Promise<string> {
-  return new Promise((resolve, reject) => {
-    if (base64OrFile instanceof File) {
-      let objectUrl: string;
+  let imageSrc = '';
+  let objectUrlToRevoke: string | null = null;
+
+  if (typeof base64OrFile === 'string') {
+    imageSrc = base64OrFile;
+  } else if (base64OrFile instanceof File || base64OrFile instanceof Blob) {
+    // Try ObjectURL first, fallback to FileReader readAsDataURL
+    try {
+      objectUrlToRevoke = URL.createObjectURL(base64OrFile);
+      imageSrc = objectUrlToRevoke;
+    } catch {
       try {
-        objectUrl = URL.createObjectURL(base64OrFile);
-      } catch (err) {
-        reject(err);
-        return;
+        imageSrc = await fileOrBlobToDataURL(base64OrFile);
+      } catch (frErr) {
+        throw new Error('FileReader failed to read file: ' + (frErr instanceof Error ? frErr.message : 'Unknown error'));
       }
-
-      const img = new Image();
-      img.onload = () => {
-        try {
-          let width = img.width;
-          let height = img.height;
-
-          // Calculate aspect ratio resizing
-          if (width > height) {
-            if (width > maxWidth) {
-              height = Math.round((height * maxWidth) / width);
-              width = maxWidth;
-            }
-          } else {
-            if (height > maxHeight) {
-              width = Math.round((width * maxHeight) / height);
-              height = maxHeight;
-            }
-          }
-
-          const canvas = document.createElement('canvas');
-          canvas.width = width;
-          canvas.height = height;
-
-          const ctx = canvas.getContext('2d');
-          if (!ctx) {
-            URL.revokeObjectURL(objectUrl);
-            reject(new Error('Could not get 2D context from canvas'));
-            return;
-          }
-
-          // Draw and compress
-          ctx.drawImage(img, 0, 0, width, height);
-          const compressedBase64 = canvas.toDataURL('image/jpeg', quality);
-          URL.revokeObjectURL(objectUrl);
-          resolve(compressedBase64);
-        } catch (e) {
-          URL.revokeObjectURL(objectUrl);
-          reject(e);
-        }
-      };
-
-      img.onerror = (err) => {
-        URL.revokeObjectURL(objectUrl);
-        reject(new Error('Failed to load image via ObjectURL: ' + (err instanceof Error ? err.message : 'Unknown error')));
-      };
-
-      img.src = objectUrl;
-    } else {
-      // It's a base64 string already
-      const img = new Image();
-      img.onload = () => {
-        try {
-          let width = img.width;
-          let height = img.height;
-
-          // Calculate aspect ratio resizing
-          if (width > height) {
-            if (width > maxWidth) {
-              height = Math.round((height * maxWidth) / width);
-              width = maxWidth;
-            }
-          } else {
-            if (height > maxHeight) {
-              width = Math.round((width * maxHeight) / height);
-              height = maxHeight;
-            }
-          }
-
-          const canvas = document.createElement('canvas');
-          canvas.width = width;
-          canvas.height = height;
-
-          const ctx = canvas.getContext('2d');
-          if (!ctx) {
-            reject(new Error('Could not get 2D context from canvas'));
-            return;
-          }
-
-          // Draw and compress
-          ctx.drawImage(img, 0, 0, width, height);
-          const compressedBase64 = canvas.toDataURL('image/jpeg', quality);
-          resolve(compressedBase64);
-        } catch (e) {
-          reject(e);
-        }
-      };
-
-      img.onerror = (err) => {
-        reject(new Error('Failed to load base64 image: ' + (err instanceof Error ? err.message : 'Unknown error')));
-      };
-
-      img.src = base64OrFile;
     }
-  });
+  } else if (base64OrFile && typeof (base64OrFile as any).url === 'string') {
+    imageSrc = (base64OrFile as any).url;
+  } else {
+    throw new Error('Invalid image input format');
+  }
+
+  try {
+    let img: HTMLImageElement;
+    try {
+      img = await loadImage(imageSrc);
+    } catch (loadErr) {
+      // If ObjectURL failed, try FileReader data URL as secondary fallback
+      if (objectUrlToRevoke && (base64OrFile instanceof File || base64OrFile instanceof Blob)) {
+        try {
+          const dataUrl = await fileOrBlobToDataURL(base64OrFile);
+          img = await loadImage(dataUrl);
+        } catch (innerErr) {
+          throw loadErr;
+        }
+      } else {
+        throw loadErr;
+      }
+    }
+
+    let width = img.width || maxWidth;
+    let height = img.height || maxHeight;
+
+    // Calculate aspect ratio resizing
+    if (width > height) {
+      if (width > maxWidth) {
+        height = Math.round((height * maxWidth) / width);
+        width = maxWidth;
+      }
+    } else {
+      if (height > maxHeight) {
+        width = Math.round((width * maxHeight) / height);
+        height = maxHeight;
+      }
+    }
+
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, width);
+    canvas.height = Math.max(1, height);
+
+    const ctx = canvas.getContext('2d');
+    if (!ctx) {
+      throw new Error('Could not get 2D context from canvas');
+    }
+
+    ctx.drawImage(img, 0, 0, width, height);
+    return canvas.toDataURL('image/jpeg', quality);
+  } finally {
+    if (objectUrlToRevoke) {
+      try {
+        URL.revokeObjectURL(objectUrlToRevoke);
+      } catch {
+        // ignore revocation errors
+      }
+    }
+  }
 }
 
 /**
@@ -132,7 +125,7 @@ export async function compressMultipleImages(
   maxHeight = 400,
   quality = 0.5
 ): Promise<string[]> {
-  const list = Array.from(files) as (File | string)[];
+  const list = Array.from(files || []) as (File | Blob | string)[];
   const results: string[] = [];
 
   for (let i = 0; i < list.length; i++) {
@@ -152,21 +145,16 @@ export async function compressMultipleImages(
       const compressed = await compressImage(item, maxWidth, maxHeight, quality);
       results.push(compressed);
     } catch (err) {
-      console.error(`Error compressing image at index ${i}:`, err);
-      // Fallback: If it's a base64 string, keep it; if it's a file, read as raw base64 data URL
+      console.warn(`Warning compressing image at index ${i}:`, err);
+      // Fallback: If it's a string, keep it; if it's a file/blob, attempt raw read
       if (typeof item === 'string') {
         results.push(item);
-      } else if (item instanceof File) {
+      } else if (item instanceof File || item instanceof Blob) {
         try {
-          const rawBase64 = await new Promise<string>((res, rej) => {
-            const r = new FileReader();
-            r.onload = () => res(r.result as string);
-            r.onerror = () => rej(new Error(`FileReader failed to read file: ${r.error?.message || 'Unknown error'}`));
-            r.readAsDataURL(item);
-          });
+          const rawBase64 = await fileOrBlobToDataURL(item);
           results.push(rawBase64);
         } catch (readErr) {
-          console.error(`Error reading raw file fallback at index ${i}:`, readErr instanceof Error ? readErr.message : readErr);
+          console.warn(`Could not read raw file fallback at index ${i}:`, readErr);
         }
       }
     }
@@ -183,3 +171,4 @@ export async function compressMultipleImages(
 
   return results;
 }
+

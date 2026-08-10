@@ -47,6 +47,7 @@ class JobQueueRunnerImpl {
         activeScoutItems: job.checkpoint?.scoutItems,
         scoutContentType: job.checkpoint?.scoutContentType,
         skipScout: !!job.checkpoint?.scoutItems || isDietitianResume,
+        portionChoices: (job.inputSnapshot as any)?.portionChoices,
         messages: job.messages || [],
       };
 
@@ -76,15 +77,32 @@ class JobQueueRunnerImpl {
         } else if (event.type === 'done') {
           const res = event.data || {};
           const mb = res.mealBuild || res.data?.mealBuild || job.mealBuild;
-          JobStore.updateJob(job.id, {
-            result: res,
-            mealBuild: mb,
-            progressPercent: 100,
-            statusMessage: 'Analysis completed',
-          });
+          
+          if (res.portionClarify || res.needsPortionClarify) {
+            JobStore.updateJob(job.id, {
+              status: 'awaiting_user',
+              result: res,
+              mealBuild: mb,
+              statusMessage: 'Please confirm portion size',
+            });
+          } else {
+            JobStore.updateJob(job.id, {
+              result: res,
+              mealBuild: mb,
+              progressPercent: 100,
+              statusMessage: 'Analysis completed',
+            });
+          }
         } else if (event.type === 'error') {
           const err = new Error(event.message || 'Execution error');
           (err as any).class = event.errorClass || 'transient';
+          if (event.checkpoint) {
+            (err as any).scoutItems = event.checkpoint.scoutItems;
+            (err as any).scoutContentType = event.checkpoint.scoutContentType;
+          }
+          if (event.portionClarify) {
+            (err as any).portionClarify = event.portionClarify;
+          }
           throw err;
         }
       }
@@ -263,6 +281,9 @@ class JobQueueRunnerImpl {
             error: {
               class: error.class || 'permanent',
               message: error.message || 'Unknown error',
+              scoutItems: error.scoutItems,
+              scoutContentType: error.scoutContentType,
+              portionClarify: error.portionClarify,
             },
           });
           

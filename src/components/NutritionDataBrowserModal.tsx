@@ -1150,7 +1150,7 @@ export default function NutritionDataBrowserModal({ isOpen, onClose }: Nutrition
 
                     {isExpanded && (
                       <div className="mt-3 pt-3 border-t border-white/10 space-y-3 text-left">
-                        <div className="space-y-1.5 max-h-[220px] overflow-y-auto pr-1">
+                        <div className="space-y-1.5">
                           {(!chainItems[key] || chainItems[key].length === 0) && (
                             <p className={`text-[10px] ${textMuted}`}>No menu items stored yet for this chain.</p>
                           )}

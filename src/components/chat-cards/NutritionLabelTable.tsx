@@ -131,7 +131,31 @@ export function NutritionLabelTable({ activeScoutItems, onConfirmItem, defaultOp
   if (!Array.isArray(items) || !items.length) return null;
   // Only `rawNutritionLabel` is gated on "a real physical panel is visible" — `nutritionFacts`
   // is a general-purpose estimate field and must never be treated as evidence of a real label.
-  const processedItems = items.map(item => {
+  const expandedItems: any[] = [];
+  (items || []).forEach(item => {
+    if (!item) return;
+    expandedItems.push(item);
+    const subComps = item.componentsDetail || item.components;
+    if (Array.isArray(subComps)) {
+      subComps.forEach((comp: any) => {
+        if (!comp) return;
+        const isCompOfficial = comp.dbSource === 'brand_official' || comp.dbSource === 'label' || comp.source === 'brand_official' || Boolean(comp.isRealTruth) || Boolean(comp.rawNutritionLabel);
+        if (isCompOfficial) {
+          expandedItems.push({
+            ...comp,
+            keyword: comp.searchQuery || comp.name || comp.keyword || comp.dish_name,
+            originalName: comp.name || comp.searchQuery || comp.keyword || comp.dish_name,
+            dbSource: comp.dbSource || comp.source || 'brand_official',
+            rawNutritionLabel: comp.rawNutritionLabel,
+            labelNutrientsPerServing: comp.labelNutrientsPerServing || comp.nutrients,
+            isRealTruth: true
+          });
+        }
+      });
+    }
+  });
+
+  const processedItems = expandedItems.map(item => {
     if (!item) return item;
     let parsedRaw = item.rawNutritionLabel;
     if (typeof parsedRaw === 'string') {

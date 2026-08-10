@@ -38,6 +38,9 @@ export interface AgentJob {
   error?: {
     class: ErrorClass;
     message: string;
+    scoutItems?: any[];
+    scoutContentType?: string;
+    portionClarify?: any;
   };
   requestId?: string;
   attemptByStep: Record<string, number>;

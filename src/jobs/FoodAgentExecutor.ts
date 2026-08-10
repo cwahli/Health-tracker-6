@@ -17,6 +17,7 @@ export interface FoodAgentExecutorInput {
   outOfRangeBiomarkers?: any[];
   remainingAllowance?: any;
   messages?: any[]; // Only what's needed for context
+  portionChoices?: any;
   activeMeal?: any;
 }
 
@@ -31,6 +32,7 @@ export interface FoodAgentExecutorEvent {
   data?: any;
   errorClass?: 'permanent' | 'transient' | 'retriable_from_checkpoint';
   message?: string;
+  portionClarify?: any;
 }
 
 const extractScratchpadText = (accumulated: string) => {
@@ -138,6 +140,9 @@ export async function* executeFoodAgent(input: FoodAgentExecutorInput): AsyncGen
   }
   if (input.skipScout) {
     bodyData.skipScout = input.skipScout;
+  }
+  if (input.portionChoices) {
+    bodyData.portionChoices = input.portionChoices;
   }
   if (input.activeScoutItems || input.checkpoint?.scoutItems) {
     bodyData.activeScoutItems = input.activeScoutItems || input.checkpoint?.scoutItems;
