@@ -14,7 +14,8 @@ export async function uploadPhotoToR2(jobId: string, imageBlobOrDataUrl: string)
 
       const publicUrl = `${CLOUDFLARE_R2_PUBLIC_URL}/photos/${jobId}.jpg`;
       if (!CLOUDFLARE_R2_ACCESS_KEY_ID || !CLOUDFLARE_R2_SECRET_ACCESS_KEY) {
-        return publicUrl;
+        console.error('[R2Storage] Missing R2 credentials — skipping photo upload, returning empty to signal failure instead of a URL that was never written.');
+        return '';
       }
 
       const s3Endpoint = `https://${CLOUDFLARE_ACCOUNT_ID}.r2.cloudflarestorage.com`;
@@ -97,7 +98,8 @@ export async function uploadDebugPayloadToR2(jobId: string, debugJson: object): 
 
       const publicUrl = `${CLOUDFLARE_R2_PUBLIC_URL}/debug/${jobId}.json`;
       if (!CLOUDFLARE_R2_ACCESS_KEY_ID || !CLOUDFLARE_R2_SECRET_ACCESS_KEY) {
-        return publicUrl;
+        console.error('[R2Storage] Missing R2 credentials — skipping debug payload upload, returning empty to signal failure instead of a URL that was never written.');
+        return '';
       }
 
       const s3Endpoint = `https://${CLOUDFLARE_ACCOUNT_ID}.r2.cloudflarestorage.com`;
@@ -153,7 +155,8 @@ export async function uploadJobResultToR2(jobId: string, resultJson: object): Pr
 
       const publicUrl = `${CLOUDFLARE_R2_PUBLIC_URL}/jobs/${jobId}_result.json`;
       if (!CLOUDFLARE_R2_ACCESS_KEY_ID || !CLOUDFLARE_R2_SECRET_ACCESS_KEY) {
-        return publicUrl;
+        console.error('[R2Storage] Missing R2 credentials — skipping job result upload, returning empty to signal failure instead of a URL that was never written. Caller must fall back to storing the full result inline.');
+        return '';
       }
 
       const s3Endpoint = `https://${CLOUDFLARE_ACCOUNT_ID}.r2.cloudflarestorage.com`;

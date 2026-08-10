@@ -424,7 +424,7 @@ export async function submitServerJob(payload: ServerJobPayload): Promise<void> 
           scoutItems: finalPayload?.scoutItems || undefined,
           photoUrl: photoUrl || undefined,
           debugUrl: undefined as string | undefined,
-          backendLogs: accumulatedLogs.join('\n').slice(-20000), // Keep last 20k chars for DB preview
+          backendLogs: accumulatedLogs.join('\n').slice(0, 200000),
           mealBuild: finalPayload?.mealBuild,
           degradedStages: finalPayload?.degradedStages,
         };

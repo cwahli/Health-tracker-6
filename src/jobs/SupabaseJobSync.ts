@@ -131,6 +131,12 @@ export function initSupabaseJobSync(userId?: string): () => void {
     return () => {};
   }
 
+  // Tracks the most recent `updated_at` timestamp successfully applied per job, so that
+  // a slow/in-flight R2 fetch for an older update cannot overwrite a newer update that
+  // finished (and was applied) first. Prevents out-of-order state application caused by
+  // the unawaited async R2 fetch inside the realtime handler below.
+  const lastAppliedUpdatedAt = new Map<string, string>();
+
   const channel = supabase.channel('public:agent_jobs')
     .on(
       'postgres_changes',
@@ -157,6 +163,8 @@ export function initSupabaseJobSync(userId?: string): () => void {
         }
 
         const processRow = async () => {
+          const rowUpdatedAt = row.updated_at || '';
+
           let cleanRes = row.clean_result;
           if (cleanRes && typeof cleanRes === 'object' && cleanRes.is_r2 && cleanRes.r2_url) {
             try {
@@ -170,6 +178,18 @@ export function initSupabaseJobSync(userId?: string): () => void {
             } catch (err) {
               console.warn('[SupabaseJobSync] Realtime R2 fetch failed:', err);
             }
+          }
+
+          // Guard against out-of-order application: if a newer update for this job was
+          // already applied while this row's (possibly slow) R2 fetch was in flight, skip
+          // this stale write instead of overwriting the newer state.
+          const alreadyApplied = lastAppliedUpdatedAt.get(row.id);
+          if (alreadyApplied && rowUpdatedAt && alreadyApplied > rowUpdatedAt) {
+            console.log(`[SupabaseJobSync] Skipping stale update for job ${row.id}`);
+            return;
+          }
+          if (rowUpdatedAt) {
+            lastAppliedUpdatedAt.set(row.id, rowUpdatedAt);
           }
 
           const existingJob = JobStore.getJob(row.id);
