@@ -1806,51 +1806,107 @@ app.post('/api/r2/upload-photo', async (req, res) => {
 
 app.post('/api/r2/migrate-firestore-images', async (req, res) => {
   try {
-    const adminDb = getFirestore(firebaseConfig?.firestoreDatabaseId ? firebaseConfig.firestoreDatabaseId : undefined);
-    const foodImagesSnap = await adminDb.collectionGroup('foodImages').get();
-    
-    if (foodImagesSnap.empty) {
-      return res.json({ success: true, message: 'No foodImages documents found in Firestore.', stats: { inspected: 0, skipped: 0, migrated: 0, updated: 0 } });
+    // Load existing food logs from Supabase for matching
+    console.log('[Firestore API Migrate] Fetching food logs from Supabase to match existing images...');
+    const { supabaseAdmin } = await import('./supabaseAdmin.js');
+    const { data: foodLogs, error: supabaseErr } = await supabaseAdmin
+      .from('food_logs')
+      .select('id, image_urls, firebase_uid');
+
+    if (supabaseErr) {
+      console.error('[Firestore API Migrate] Error: Failed to fetch food logs from Supabase:', supabaseErr.message);
+      return res.status(500).json({ error: 'Failed to fetch food logs from Supabase', details: supabaseErr.message });
     }
 
+    if (!foodLogs || foodLogs.length === 0) {
+      return res.json({ success: true, message: 'No food logs found in Supabase.', stats: { inspected: 0, skipped: 0, matched: 0, migrated: 0, updated: 0 } });
+    }
+
+    // Initialize client Firebase SDK dynamically to run under client permissions
+    const { initializeApp: initializeClientApp } = await import('firebase/app');
+    const { initializeFirestore: initializeClientFirestore, doc: clientDoc, getDoc: clientGetDoc, updateDoc: clientUpdateDoc } = await import('firebase/firestore');
+
+    const clientApp = initializeClientApp(firebaseConfig);
+    const clientDb = firebaseConfig?.firestoreDatabaseId
+      ? initializeClientFirestore(clientApp, {}, firebaseConfig.firestoreDatabaseId)
+      : initializeClientFirestore(clientApp, {});
+
     let migratedCount = 0;
+    let matchedCount = 0;
     let docsUpdatedCount = 0;
     let skippedCount = 0;
 
-    for (const docSnap of foodImagesSnap.docs) {
-      const data = docSnap.data();
-      const docId = docSnap.id;
-      const parentUser = docSnap.ref.parent.parent;
-      const userId = parentUser ? parentUser.id : 'unknown_user';
+    for (const log of foodLogs) {
+      const docId = log.id;
+      const userId = log.firebase_uid;
 
+      if (!userId) {
+        skippedCount++;
+        continue;
+      }
+
+      const docRef = clientDoc(clientDb, 'users', userId, 'foodImages', docId);
+      let docSnapShot;
+      try {
+        docSnapShot = await clientGetDoc(docRef);
+      } catch (docErr: any) {
+        console.warn(`[Firestore API Migrate] Failed to fetch doc users/${userId}/foodImages/${docId}:`, docErr.message || docErr);
+        continue;
+      }
+
+      if (!docSnapShot.exists()) {
+        skippedCount++;
+        continue;
+      }
+
+      const data = docSnapShot.data() || {};
       let hasChanges = false;
       let updatedImageUrl = data.imageUrl || null;
       let updatedImageUrls = Array.isArray(data.imageUrls) ? [...data.imageUrls] : [];
 
-      if (typeof data.imageUrl === 'string' && data.imageUrl.startsWith('data:image/')) {
-        hasChanges = true;
-        try {
-          console.log(`[Firestore API Migrate] Uploading imageUrl for doc ${docId} (User ${userId})...`);
-          const r2Url = await uploadBase64ToR2(docId, data.imageUrl, 0);
-          updatedImageUrl = r2Url;
-          migratedCount++;
-        } catch (uploadErr) {
-          console.error(`[Firestore API Migrate] Upload failure for ${docId}`);
-        }
-      }
+      // Check if we have a match in Supabase
+      const cleanSupabaseUrls = log.image_urls && Array.isArray(log.image_urls)
+        ? log.image_urls.filter((url: string) => typeof url === 'string' && !url.startsWith('data:'))
+        : [];
 
-      if (Array.isArray(data.imageUrls)) {
-        for (let i = 0; i < data.imageUrls.length; i++) {
-          const url = data.imageUrls[i];
-          if (typeof url === 'string' && url.startsWith('data:image/')) {
-            hasChanges = true;
-            try {
-              console.log(`[Firestore API Migrate] Uploading imageUrls[${i}] for doc ${docId} (User ${userId})...`);
-              const r2Url = await uploadBase64ToR2(docId, url, i);
-              updatedImageUrls[i] = r2Url;
-              migratedCount++;
-            } catch (uploadErr) {
-              console.error(`[Firestore API Migrate] Upload failure for ${docId}[${i}]`);
+      if (cleanSupabaseUrls.length > 0) {
+        const isImageUrlAligned = updatedImageUrl === cleanSupabaseUrls[0];
+        const isImageUrlsAligned = JSON.stringify(updatedImageUrls) === JSON.stringify(cleanSupabaseUrls);
+
+        if (!isImageUrlAligned || !isImageUrlsAligned) {
+          console.log(`[Firestore API Migrate] Match found in Supabase for doc ${docId}! Aligning Firestore with Supabase R2 URLs directly...`);
+          updatedImageUrl = cleanSupabaseUrls[0];
+          updatedImageUrls = cleanSupabaseUrls;
+          hasChanges = true;
+          matchedCount++;
+        }
+      } else {
+        // No Supabase match found - migrate base64 strings if present
+        if (typeof data.imageUrl === 'string' && data.imageUrl.startsWith('data:image/')) {
+          hasChanges = true;
+          try {
+            console.log(`[Firestore API Migrate] Uploading imageUrl for doc ${docId} (User ${userId})...`);
+            const r2Url = await uploadBase64ToR2(docId, data.imageUrl, 0);
+            updatedImageUrl = r2Url;
+            migratedCount++;
+          } catch (uploadErr) {
+            console.error(`[Firestore API Migrate] Upload failure for ${docId}`);
+          }
+        }
+
+        if (Array.isArray(data.imageUrls)) {
+          for (let i = 0; i < data.imageUrls.length; i++) {
+            const url = data.imageUrls[i];
+            if (typeof url === 'string' && url.startsWith('data:image/')) {
+              hasChanges = true;
+              try {
+                console.log(`[Firestore API Migrate] Uploading imageUrls[${i}] for doc ${docId} (User ${userId})...`);
+                const r2Url = await uploadBase64ToR2(docId, url, i);
+                updatedImageUrls[i] = r2Url;
+                migratedCount++;
+              } catch (uploadErr) {
+                console.error(`[Firestore API Migrate] Upload failure for ${docId}[${i}]`);
+              }
             }
           }
         }
@@ -1859,7 +1915,7 @@ app.post('/api/r2/migrate-firestore-images', async (req, res) => {
       if (hasChanges) {
         console.log(`[Firestore API Migrate] Updating doc ID: ${docId} (User: ${userId}) in Firestore with clean R2 links...`);
         try {
-          await docSnap.ref.update({
+          await clientUpdateDoc(docRef, {
             imageUrl: updatedImageUrl,
             imageUrls: updatedImageUrls
           });
@@ -1875,8 +1931,9 @@ app.post('/api/r2/migrate-firestore-images', async (req, res) => {
     res.json({
       success: true,
       stats: {
-        inspected: foodImagesSnap.size,
+        inspected: foodLogs.length,
         skipped: skippedCount,
+        matched: matchedCount,
         migrated: migratedCount,
         updated: docsUpdatedCount
       }

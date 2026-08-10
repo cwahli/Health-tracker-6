@@ -1,9 +1,10 @@
 import 'dotenv/config';
-import { initializeApp, getApps } from 'firebase-admin/app';
-import { getFirestore } from 'firebase-admin/firestore';
+import { initializeApp } from 'firebase/app';
+import { initializeFirestore, doc, getDoc, updateDoc } from 'firebase/firestore';
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
 import fs from 'fs';
 import path from 'path';
+import { supabaseAdmin } from '../supabaseAdmin.js';
 
 // 1. Load Firebase and R2 Configurations
 const configPath = path.join(process.cwd(), 'firebase-applet-config.json');
@@ -33,14 +34,12 @@ console.log('CLOUDFLARE_R2_SECRET_ACCESS_KEY:', CLOUDFLARE_R2_SECRET_ACCESS_KEY 
 console.log('==========================================');
 
 // 2. Initialize Clients
-if (getApps().length === 0) {
-  initializeApp({
-    projectId: firebaseConfig?.projectId || process.env.GOOGLE_CLOUD_PROJECT || process.env.GCP_PROJECT
-  });
-}
+const app = initializeApp(firebaseConfig);
 
 // Support custom database instances if provided
-const db = getFirestore(firebaseConfig?.firestoreDatabaseId ? firebaseConfig.firestoreDatabaseId : undefined);
+const db = firebaseConfig?.firestoreDatabaseId
+  ? initializeFirestore(app, {}, firebaseConfig.firestoreDatabaseId)
+  : initializeFirestore(app, {});
 
 let s3Client: S3Client | null = null;
 if (CLOUDFLARE_R2_ACCESS_KEY_ID && CLOUDFLARE_R2_SECRET_ACCESS_KEY) {
@@ -102,60 +101,102 @@ async function uploadBase64ToR2(id: string, base64Data: string, index: number = 
 async function runMigration() {
   console.log('\n--- Starting Firestore to Cloudflare R2 Image Migration ---');
 
-  let foodImagesSnap;
-  try {
-    foodImagesSnap = await db.collectionGroup('foodImages').get();
-  } catch (err: any) {
-    console.error('Error fetching collection group foodImages from Firestore:', err.message || err);
+  // Load existing food logs from Supabase for matching
+  console.log('[Firestore Migrate] Fetching food logs from Supabase to match existing images...');
+  const { data: foodLogs, error: supabaseErr } = await supabaseAdmin
+    .from('food_logs')
+    .select('id, image_urls, firebase_uid');
+
+  if (supabaseErr) {
+    console.error('Error: Failed to fetch food logs from Supabase:', supabaseErr.message);
     process.exit(1);
   }
 
-  if (foodImagesSnap.empty) {
-    console.log('No foodImages documents found in Firestore.');
+  if (!foodLogs || foodLogs.length === 0) {
+    console.log('No food logs found in Supabase.');
     process.exit(0);
   }
 
-  console.log(`Successfully fetched ${foodImagesSnap.size} foodImages documents.`);
+  console.log(`[Firestore Migrate] Loaded ${foodLogs.length} food logs from Supabase.`);
   let migratedCount = 0;
+  let matchedCount = 0;
   let docsUpdatedCount = 0;
   let skippedCount = 0;
 
-  for (const docSnap of foodImagesSnap.docs) {
-    const data = docSnap.data();
-    const docId = docSnap.id;
-    const parentUser = docSnap.ref.parent.parent;
-    const userId = parentUser ? parentUser.id : 'unknown_user';
+  for (const log of foodLogs) {
+    const docId = log.id;
+    const userId = log.firebase_uid || 'unknown_user';
 
+    if (!log.firebase_uid) {
+      console.log(`[Firestore Migrate] Skipping log ${docId} because it has no firebase_uid.`);
+      skippedCount++;
+      continue;
+    }
+
+    // Reference the specific document in Firestore
+    const docRef = doc(db, 'users', userId, 'foodImages', docId);
+    let docSnap;
+    try {
+      docSnap = await getDoc(docRef);
+    } catch (docErr: any) {
+      console.warn(`[Firestore Migrate] Failed to fetch Firestore doc users/${userId}/foodImages/${docId}:`, docErr.message || docErr);
+      continue;
+    }
+
+    if (!docSnap.exists()) {
+      skippedCount++;
+      continue;
+    }
+
+    const data = docSnap.data() || {};
     let hasChanges = false;
     let updatedImageUrl = data.imageUrl || null;
     let updatedImageUrls = Array.isArray(data.imageUrls) ? [...data.imageUrls] : [];
 
-    // 1. Process single imageUrl field
-    if (typeof data.imageUrl === 'string' && data.imageUrl.startsWith('data:image/')) {
-      hasChanges = true;
-      try {
-        console.log(`[Firestore Migrate] Uploading imageUrl for doc ${docId} (User ${userId})...`);
-        const r2Url = await uploadBase64ToR2(docId, data.imageUrl, 0);
-        updatedImageUrl = r2Url;
-        migratedCount++;
-      } catch (uploadErr) {
-        console.error(`Skipping update for single imageUrl in doc ${docId} due to upload failure.`);
-      }
-    }
+    // Filter out base64 strings from Supabase URLs to see if we have migrated URLs in Supabase
+    const cleanSupabaseUrls = log.image_urls && Array.isArray(log.image_urls)
+      ? log.image_urls.filter((url: string) => typeof url === 'string' && !url.startsWith('data:'))
+      : [];
 
-    // 2. Process imageUrls array field
-    if (Array.isArray(data.imageUrls)) {
-      for (let i = 0; i < data.imageUrls.length; i++) {
-        const url = data.imageUrls[i];
-        if (typeof url === 'string' && url.startsWith('data:image/')) {
-          hasChanges = true;
-          try {
-            console.log(`[Firestore Migrate] Uploading imageUrls[${i}] for doc ${docId} (User ${userId})...`);
-            const r2Url = await uploadBase64ToR2(docId, url, i);
-            updatedImageUrls[i] = r2Url;
-            migratedCount++;
-          } catch (uploadErr) {
-            console.error(`Skipping update for imageUrls[${i}] in doc ${docId} due to upload failure.`);
+    if (cleanSupabaseUrls.length > 0) {
+      // Match up with Supabase R2 URLs
+      const isImageUrlAligned = updatedImageUrl === cleanSupabaseUrls[0];
+      const isImageUrlsAligned = JSON.stringify(updatedImageUrls) === JSON.stringify(cleanSupabaseUrls);
+
+      if (!isImageUrlAligned || !isImageUrlsAligned) {
+        console.log(`[Firestore Migrate] Match found in Supabase for doc ${docId}! Aligning Firestore with Supabase R2 URLs directly...`);
+        updatedImageUrl = cleanSupabaseUrls[0];
+        updatedImageUrls = cleanSupabaseUrls;
+        hasChanges = true;
+        matchedCount++;
+      }
+    } else {
+      // No clean URLs in Supabase - upload base64 from Firestore to R2
+      if (typeof data.imageUrl === 'string' && data.imageUrl.startsWith('data:image/')) {
+        hasChanges = true;
+        try {
+          console.log(`[Firestore Migrate] Uploading imageUrl for doc ${docId} (User ${userId})...`);
+          const r2Url = await uploadBase64ToR2(docId, data.imageUrl, 0);
+          updatedImageUrl = r2Url;
+          migratedCount++;
+        } catch (uploadErr) {
+          console.error(`Skipping update for single imageUrl in doc ${docId} due to upload failure.`);
+        }
+      }
+
+      if (Array.isArray(data.imageUrls)) {
+        for (let i = 0; i < data.imageUrls.length; i++) {
+          const url = data.imageUrls[i];
+          if (typeof url === 'string' && url.startsWith('data:image/')) {
+            hasChanges = true;
+            try {
+              console.log(`[Firestore Migrate] Uploading imageUrls[${i}] for doc ${docId} (User ${userId})...`);
+              const r2Url = await uploadBase64ToR2(docId, url, i);
+              updatedImageUrls[i] = r2Url;
+              migratedCount++;
+            } catch (uploadErr) {
+              console.error(`Skipping update for imageUrls[${i}] in doc ${docId} due to upload failure.`);
+            }
           }
         }
       }
@@ -165,7 +206,7 @@ async function runMigration() {
     if (hasChanges) {
       console.log(`Updating doc ID: ${docId} (User: ${userId}) in Firestore with clean R2 links...`);
       try {
-        await docSnap.ref.update({
+        await updateDoc(docRef, {
           imageUrl: updatedImageUrl,
           imageUrls: updatedImageUrls
         });
@@ -180,9 +221,10 @@ async function runMigration() {
   }
 
   console.log('\n=== Firestore Migration Completed ===');
-  console.log(`Total inspected documents: ${foodImagesSnap.size}`);
+  console.log(`Total inspected documents: ${foodLogs.length}`);
   console.log(`Skipped documents (already using URLs or empty): ${skippedCount}`);
-  console.log(`Migrated individual images: ${migratedCount}`);
+  console.log(`Matched and aligned from Supabase: ${matchedCount}`);
+  console.log(`Migrated individual images to R2: ${migratedCount}`);
   console.log(`Updated database documents in Firestore: ${docsUpdatedCount}`);
   console.log('=====================================\n');
 }
