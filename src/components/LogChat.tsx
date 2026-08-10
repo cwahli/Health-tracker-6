@@ -3963,7 +3963,16 @@ ${logsText}`);
         if (activeAgentType) {
           assistantMsg.agentType = (activeAgentType === 'agent1_step1' ? 'agent1' : activeAgentType) as AgentType;
           assistantMsg.agentResult = resData;
-          assistantMsg.data = { agentResult: resData };
+          assistantMsg.data = {
+            agentResult: {
+              ...resData,
+              scoutScratchpad: resData.scoutScratchpad || liveThoughts.scout || '',
+              dietitianScratchpad: resData.dietitianScratchpad || liveThoughts.dietitian || '',
+              backendLogs: resData.backendLogs || backendLogsFull || liveThoughts.backendLogs || '',
+              globalLiveLogs: resData.globalLiveLogs || globalLiveLogsRef.current || liveThoughts.globalLiveLogs || liveThoughts.backendLogs || '',
+              dbSearchLog: resData.dbSearchLog || liveThoughts.dbSearchLog || ''
+            }
+          };
           if (activeAgentType === 'agent1' || activeAgentType === 'agent1_step1') {
             assistantMsg.agentTypeStep = resData.agentType || 'agent1_step1';
           const originalReport = bodyData.originalReportText || bodyData.message;

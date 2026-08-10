@@ -1326,7 +1326,7 @@ export default function App() {
                       message: line
                     }));
                   }
-                  fetch(`/api/gemini/debug-logs?sessionId=${reqId}`)
+                  fetch(`/api/gemini/debug-logs?sessionId=server-job-${reqId}`)
                     .then(res => res.ok ? res.json() : null)
                     .then(data => {
                       if (data && Array.isArray(data.logs) && data.logs.length > 0) {
