@@ -216,27 +216,31 @@ export function initSupabaseJobSync(userId?: string): () => void {
 
           if (row.status === 'awaiting_user' && cleanRes) {
             const clarifyMsg = cleanRes.message || row.status_message || 'Confirm how much you ate';
-            updatedFields.messages = [{
-              id: `msg_assistant_clarify_${row.id}`,
-              role: 'assistant',
-              content: clarifyMsg,
-              timestamp: new Date().toISOString(),
-              isLive: false,
-              agentType: 'food',
-              data: {
-                needsPortionClarify: true,
-                portionClarify: cleanRes.portionClarify,
-                scoutItems: cleanRes.scoutItems || [],
-                photoUrl: row.photo_url || cleanRes.photoUrl,
-                debugUrl: row.debug_url || cleanRes.debugUrl,
-                agentResult: {
-                  backendLogs: cleanRes.backendLogs || '',
-                  globalLiveLogs: cleanRes.backendLogs || '',
+            const previousMsgs = (existingJob?.messages || []).filter((m: any) => m.id !== `msg_assistant_clarify_${row.id}`);
+            updatedFields.messages = [
+              ...previousMsgs,
+              {
+                id: `msg_assistant_clarify_${row.id}`,
+                role: 'assistant',
+                content: clarifyMsg,
+                timestamp: new Date().toISOString(),
+                isLive: false,
+                agentType: 'food',
+                data: {
+                  needsPortionClarify: true,
+                  portionClarify: cleanRes.portionClarify,
                   scoutItems: cleanRes.scoutItems || [],
-                  activeStage: 'portion_clarify',
+                  photoUrl: row.photo_url || cleanRes.photoUrl,
+                  debugUrl: row.debug_url || cleanRes.debugUrl,
+                  agentResult: {
+                    backendLogs: cleanRes.backendLogs || '',
+                    globalLiveLogs: cleanRes.backendLogs || '',
+                    scoutItems: cleanRes.scoutItems || [],
+                    activeStage: 'portion_clarify',
+                  },
                 },
-              },
-            }];
+              }
+            ];
           }
 
           const rowPhotoUrl = row.photo_url || cleanRes?.photoUrl;

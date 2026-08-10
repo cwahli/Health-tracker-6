@@ -1618,7 +1618,7 @@ ${logsText}`);
           const scoutItems =
             rawResult.scoutItems ||
             [];
-          let assistantClarifyMsg = baseMsgs.find((m: any) => m.role === 'assistant' && (m.data?.portionClarify || m.data?.needsPortionClarify));
+          let assistantClarifyMsg = baseMsgs.find((m: any) => m.id === `msg_assistant_clarify_${jobId}` || (m.role === 'assistant' && (m.data?.portionClarify || m.data?.needsPortionClarify)));
           if (!assistantClarifyMsg) {
             assistantClarifyMsg = {
               id: `msg_assistant_clarify_${jobId}`,
@@ -5405,7 +5405,7 @@ ${JSON.stringify(profile, null, 2)}`);
 
                   return (
                 <div
-                  key={msg.id}
+                  key={msg.id ? `${msg.id}_${idx}` : idx}
                   id={isLastFoodMsg ? "last-food-message" : undefined}
                   className="w-full space-y-2.5 px-1 min-w-0 relative group"
                 >
@@ -5668,11 +5668,15 @@ ${JSON.stringify(profile, null, 2)}`);
                             portionClarify={msg.data.portionClarify}
                             onConfirm={(choices: any) => {
                               if (typeof handleSend === 'function') {
-                                // Pass the scout item(s) straight from this message so the
-                                // resume request never depends on re-deriving them elsewhere.
+                                // Pass the scout item(s) straight from this message with full fallback,
+                                // ensuring portion-confirm resume never loses OCR label truth.
+                                const activeMeal = [...messages].reverse().find(m => m.data?.pendingFoodLog)?.data?.pendingFoodLog || [...messages].reverse().find(m => m.pendingFoodLog)?.pendingFoodLog;
                                 const clarifyScoutItems = (msg.data?.scoutItems && msg.data.scoutItems.length > 0)
                                   ? msg.data.scoutItems
-                                  : (msg.data?.agentResult?.scoutItems || []);
+                                  : (msg.data?.agentResult?.scoutItems?.length ? msg.data.agentResult.scoutItems
+                                  : (msg.data?.portionClarify?.scoutItems?.length ? msg.data.portionClarify.scoutItems
+                                  : (msg.data?.portionClarify?.items?.length ? msg.data.portionClarify.items
+                                  : (activeMeal?.scoutItems?.length ? activeMeal.scoutItems : []))));
                                 handleSend(JSON.stringify(choices), [], {
                                   portionChoices: choices,
                                   skipScout: true,
@@ -5695,7 +5699,7 @@ ${JSON.stringify(profile, null, 2)}`);
               if (msg.content === 'Surprise me') return null;
               return (
                 <div
-                  key={msg.id}
+                  key={msg.id ? `${msg.id}_${idx}` : idx}
                   className="flex gap-3 max-w-[85%] w-full min-w-0 ml-auto flex-row-reverse"
                 >
                   <div className="space-y-2 flex-1 min-w-0 max-w-full">

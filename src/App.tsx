@@ -1229,7 +1229,7 @@ export default function App() {
 
                   // B6c — short status strip while full clarify question stays in the assistant bubble
                   const portionStatusMsg = 'Waiting for portion choice';
-                  const nonLiveMsgs = (job.messages || []).filter((m) => !m.isLive);
+                  const nonLiveMsgs = (job.messages || []).filter((m) => !m.isLive && m.id !== `msg_assistant_clarify_${job.id}`);
                   const clarifyAssistant = {
                     id: `msg_assistant_clarify_${job.id}`,
                     role: 'assistant',

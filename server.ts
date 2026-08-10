@@ -5018,14 +5018,24 @@ app.post("/api/gemini/food-analyze", async (req, res) => {
       }
       visionScoutContentType = req.body.scoutContentType || 'visual';
       visionScoutRanAndReturnedItems = visionScoutItems.length > 0;
-    } else if ((req.body.skipScout || req.body.portionChoices) && req.body.activeScoutItems && req.body.activeScoutItems.length > 0) {
-      addDebugLog(`[Shortcut] skipScout or portionChoices is true. Inheriting scout items from previous run.`);
-      visionScoutItems = applyPortionChoices(
-        req.body.activeScoutItems,
-        req.body.portionChoices
-      );
-      visionScoutContentType = req.body.scoutContentType || 'visual';
-      visionScoutRanAndReturnedItems = true;
+    } else if (req.body.skipScout || req.body.portionChoices) {
+      const priorScout = (Array.isArray(req.body.activeScoutItems) && req.body.activeScoutItems.length > 0)
+        ? req.body.activeScoutItems
+        : ((Array.isArray(req.body.scoutItems) && req.body.scoutItems.length > 0)
+          ? req.body.scoutItems
+          : (Array.isArray(activeMeal?.scoutItems) && activeMeal.scoutItems.length > 0 ? activeMeal.scoutItems : []));
+      
+      if (priorScout.length > 0) {
+        addDebugLog(`[Shortcut] skipScout or portionChoices is true. Inheriting ${priorScout.length} scout items from previous run.`);
+        visionScoutItems = applyPortionChoices(
+          priorScout,
+          req.body.portionChoices
+        );
+        visionScoutContentType = req.body.scoutContentType || 'visual';
+        visionScoutRanAndReturnedItems = true;
+      } else {
+        addDebugLog(`[PortionChoices] portionChoices provided but priorScout is empty; proceeding with standard pipeline.`);
+      }
     } else {
       const hasImage = imagePayloads && imagePayloads.length > 0;
       if (hasImage) {
@@ -5406,6 +5416,25 @@ app.post("/api/gemini/food-analyze", async (req, res) => {
         'scout',
         `[PortionClarify] ${portionClarify.promptMessage}`
       );
+      if (isStream && hasSentHeaders) {
+        sendStreamEvent({
+          type: 'done',
+          result: {
+            needsPortionClarify: true,
+            mode: 'portion_clarify',
+            message: portionClarify.promptMessage,
+            text: portionClarify.promptMessage,
+            scoutItems: visionScoutItems,
+            portionClarify,
+            agentResult: {
+              scoutItems: visionScoutItems,
+              activeStage: 'portion_clarify',
+            },
+          }
+        });
+        res.end();
+        return;
+      }
       return res.json({
         needsPortionClarify: true,
         mode: 'portion_clarify',
@@ -6510,6 +6539,13 @@ function parseServingSizeGrams(ssVal: string, totalItemWeight: number): number {
                 addDebugLog(`[Truth Merge] Database match calories (${webCalsForScale.toFixed(0)}) deviate too much from OCR label (${ocrCals}). Refusing to merge DB macros.`);
                 webMatchRaw = null;
             }
+        } else if (ocrCals === 0 && webCalsForScale > 0) {
+            // Label had 0 cals / missing nutrients — adopt database match instead of locking to 0
+            addDebugLog(`[Truth Merge] OCR label had 0 calories; adopting database match (${webMatchRaw.name}) to avoid 0-macro receipt.`);
+            truthMatch = {
+              ...webMatchRaw,
+              source: webMatchRaw.source || 'usda'
+            };
         }
         
         const mapField = (labelKey: string, webKeys: string[]) => {
