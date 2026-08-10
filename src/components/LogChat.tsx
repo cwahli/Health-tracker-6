@@ -2650,7 +2650,7 @@ ${logsText}`);
           job?.result?.data || 
           [...existingMsgs].reverse().find(m => m.data?.pendingFoodLog || m.pendingFoodLog)?.data?.pendingFoodLog || 
           [...existingMsgs].reverse().find(m => m.data?.pendingFoodLog || m.pendingFoodLog)?.pendingFoodLog ||
-          (!extraOptions?.portionChoices && foodLogs && foodLogs.length > 0 ? foodLogs[foodLogs.length - 1] : null);
+          (!extraOptions?.portionChoices && finalImages.length === 0 && foodLogs && foodLogs.length > 0 ? foodLogs[foodLogs.length - 1] : null);
         let prunedMealForJob = null;
         if (lastFoodLogForJob) {
           try {
